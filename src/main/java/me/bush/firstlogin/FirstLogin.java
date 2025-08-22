@@ -96,7 +96,9 @@ public class FirstLogin extends JavaPlugin {
         String worldName = config.getString("World.name", "world");
 
         // Determine playerdata dir for counting / listing players to date
-        File worldFolder = Bukkit.getWorld(worldName) != null ? Bukkit.getWorld(worldName).getWorldFolder() : new File(worldName);
+        File worldFolder = Bukkit.getWorld(worldName) != null
+                ? Bukkit.getWorld(worldName).getWorldFolder()
+                : Bukkit.getWorldContainer().toPath().resolve(worldName).toFile();
         File playerDataDir = new File(worldFolder, "playerdata");
         List<String> namesToDate = new ArrayList<>();
         if (playerDataDir.isDirectory()) {

@@ -16,3 +16,9 @@ Thumbs.db
 
 # Build caches
 *.log
+
+# Legacy/decompiled artifacts
+/jar_unpacked/
+/resources/
+/src_decompiled/
+/cfr.jar
