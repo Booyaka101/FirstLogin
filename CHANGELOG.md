@@ -1,5 +1,25 @@
 # FirstLogin – Changelog
 
+## 1.7.1 (2025‑08‑22)
+
+- Fix: Eliminated server stalls when opening the Welcome GUI by removing reflection and opening the GUI after a safer delay
+- Fix: Fully blocked item movement while the Welcome GUI is open (clicks, drags, creative actions, drops, hand swapping)
+- Add: Player overload for `sendMsg(Player, String, Player, int)` that delegates to the `CommandSender` version
+- Add: Public helpers to avoid reflection (`playersToDate()`, messaging helpers)
+- Add: Locale-aware message accessors (`messagesFor()`, `msgFor()`, `msgListFor()`)
+- Change: Increased/validated default `welcomeGui.openDelayTicks` to 40 ticks to avoid NMS init stalls
+- Internal: Strengthened event handlers in `firstlogin/gui/WelcomeGui.java` at multiple priorities
+- Performance: Players-to-date count warmed up asynchronously on enable to avoid main-thread I/O stalls
+- Build: Bump version to 1.7.1
+- Toggleable options
+  - New in 1.7.1: `welcomeGui.openDelayTicks` – delay before opening the Welcome GUI after first join (ticks)
+  - Existing toggles (for reference):
+    - `formatting.useMiniMessage`, `formatting.usePlaceholders`, `formatting.usePlaceholderAPI`
+    - `firstJoinVisuals.title.enabled`, `firstJoinVisuals.actionbar.enabled`, `firstJoinVisuals.sound.enabled`
+    - `messageGlobal.enabled`, `message.enabled`, `messageBack.enabled`
+    - `welcomeGui.enabled`, `welcomeGui.blockCloseUntilAccepted`
+    - `metrics.enabled`
+
 ## 1.7 (2025‑08‑22)
 
 - New: Full tab completion for `/firstlogin` subcommands

@@ -56,6 +56,8 @@ welcomeGui:
   enabled: true
   rows: 3
   title: "&aWelcome"
+  # Delay before opening the GUI after first join (ticks). Increase if your server watchdog reports stalls.
+  openDelayTicks: 40
   # Prevent closing until rules are accepted
   blockCloseUntilAccepted: true
   # Bump when rules change to force re-acceptance: flags will be stored as rules_v<version>

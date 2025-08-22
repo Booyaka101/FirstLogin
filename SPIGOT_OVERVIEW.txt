@@ -2,7 +2,7 @@
 [B][SIZE=6]FirstLogin[/SIZE][/B]
 A welcoming first-join experience with titles, action bar, sounds, and clean MiniMessage formatting (with legacy & colors supported).
 
-[SIZE=4][B]Version:[/B] 1.6  •  [B]Minecraft:[/B] 1.20+  •  [B]Java:[/B] 17  •  [B]Author:[/B] BooPug Studios[/SIZE]
+[SIZE=4][B]Version:[/B] 1.7.1  •  [B]Minecraft:[/B] 1.20+  •  [B]Java:[/B] 17  •  [B]Author:[/B] BooPug Studios[/SIZE]
 [/CENTER]
 
 [B]Why FirstLogin?[/B]
@@ -70,6 +70,14 @@ firstJoinVisuals:
 returningGate:
   minDaysOffline: 0
 
+welcomeGui:
+  enabled: true
+  title: "&aWelcome"
+  rows: 3
+  openDelayTicks: 40   # delay before opening GUI after first join (ticks)
+  blockCloseUntilAccepted: true
+  rulesVersion: 1
+
 metrics:
   enabled: true
   pluginId: 27008
@@ -87,7 +95,7 @@ If PlaceholderAPI is installed and enabled in config, its placeholders will also
 
 [B]Installation[/B]
 [LIST=1]
-[*] Drop [I]firstlogin-1.6.jar[/I] into your [I]plugins/[/I] folder
+[*] Drop [I]firstlogin-1.7.1.jar[/I] into your [I]plugins/[/I] folder
 [*] Start the server to generate configs (config.yml, messages.yml, players.yml)
 [*] Customize your messages and visuals
 [*] Restart the server (recommended over /reload)
@@ -101,6 +109,15 @@ If PlaceholderAPI is installed and enabled in config, its placeholders will also
 
 [B]bStats[/B]
 Anonymous usage statistics help guide development. You can opt out globally via [I]plugins/bStats/config.yml[/I] or disable this plugin’s metrics in [I]config.yml[/I].
+
+[B]What’s New in 1.7.1[/B]
+[LIST]
+[*] Eliminated server stalls when opening the Welcome GUI by removing reflection and opening after a safer delay
+[*] Fully blocked inventory interactions while the Welcome GUI is open (clicks, drags, creative actions, drops, hand swapping)
+[*] Added Player overload for sendMsg and exposed public helpers to avoid reflection
+[*] Increased/validated default welcomeGui.openDelayTicks to 40 ticks to avoid NMS initialization stalls
+[*] Asynchronous warm-up of players-to-date cache on enable to avoid main-thread I/O stalls
+[/LIST]
 
 [B]What’s New in 1.6[/B]
 [LIST]
