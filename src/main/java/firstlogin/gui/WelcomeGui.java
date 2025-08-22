@@ -6,14 +6,19 @@ import org.bukkit.Sound;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryCreativeEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -42,19 +47,8 @@ public class WelcomeGui implements Listener {
     }
 
     private String withPlaceholders(Player p, String text) {
-        if (text == null) return "";
-        try {
-            java.lang.reflect.Method count = FirstLogin.class.getDeclaredMethod("countPlayersToDate");
-            count.setAccessible(true);
-            Object totalObj = count.invoke(plugin);
-            int total = (totalObj instanceof Integer) ? (Integer) totalObj : 0;
-            java.lang.reflect.Method m = FirstLogin.class.getDeclaredMethod("applyAllPlaceholders", String.class, Player.class, int.class);
-            m.setAccessible(true);
-            Object out = m.invoke(plugin, text, p, total);
-            if (out instanceof String) return (String) out;
-        } catch (Throwable ignored) {}
-        // Fallback minimal builtin
-        return text.replace("{player}", p.getName());
+        // Not used for core formatting anymore; kept as a safe passthrough helper
+        return text == null ? "" : text.replace("{player}", p.getName());
     }
 
     public boolean isEnabled() {
@@ -65,10 +59,11 @@ public class WelcomeGui implements Listener {
         if (!isEnabled()) return;
         int rows = Math.max(1, Math.min(6, FirstLogin.config.getInt("welcomeGui.rows", 3)));
         String title = FirstLogin.config.getString("welcomeGui.title", "Welcome");
-        // Use legacy for inventory title for broad compatibility
-        String legacyTitle = FirstLogin.colorizeWithHex(title);
+        // Build Adventure->legacy converted title using placeholders
+        int totalForTitle = plugin.playersToDate();
+        String legacyTitle = plugin.toLegacyString(title, player, totalForTitle);
 
-        Inventory inv = Bukkit.createInventory(new WelcomeHolder(), rows * 9, legacyTitle);
+        Inventory inv = Bukkit.createInventory(new WelcomeHolder(false), rows * 9, legacyTitle);
         Map<Integer, GuiAction> actions = new HashMap<>();
 
         ConfigurationSection items = FirstLogin.config.getConfigurationSection("welcomeGui.items");
@@ -101,11 +96,11 @@ public class WelcomeGui implements Listener {
                 ItemStack item = new ItemStack(mat);
                 ItemMeta meta = item.getItemMeta();
                 if (meta != null) {
-                    String dn = withPlaceholders(player, name);
-                    meta.setDisplayName(FirstLogin.colorizeWithHex(dn));
+                    final int total = plugin.playersToDate();
+                    meta.setDisplayName(plugin.toLegacyString(name, player, total));
                     if (lore != null && !lore.isEmpty()) {
                         List<String> lines = lore.stream()
-                                .map(s -> FirstLogin.colorizeWithHex(withPlaceholders(player, s)))
+                                .map(s -> plugin.toLegacyString(s, player, total))
                                 .collect(Collectors.toList());
                         meta.setLore(lines);
                     }
@@ -119,24 +114,70 @@ public class WelcomeGui implements Listener {
         openActions.put(player.getUniqueId(), actions);
         player.openInventory(inv);
         String opened = pluginMsg(player, "messages.gui.opened");
-        if (!opened.isEmpty()) player.sendMessage(FirstLogin.colorizeWithHex(opened));
+        if (!opened.isEmpty()) sendTo(player, opened);
+    }
+
+    // Open a focused Rules view: show rules inside the GUI (title + lore) with a Back button
+    private void openRulesFor(Player player, String path) {
+        if (!isEnabled()) return;
+        int rows = Math.max(1, Math.min(6, FirstLogin.config.getInt("welcomeGui.rows", 3)));
+        String title = FirstLogin.config.getString("welcomeGui.title", "Welcome");
+        int totalForTitle = plugin.playersToDate();
+        String legacyTitle = plugin.toLegacyString(title, player, totalForTitle);
+
+        Inventory inv = Bukkit.createInventory(new WelcomeHolder(true), rows * 9, legacyTitle);
+        Map<Integer, GuiAction> actions = new HashMap<>();
+
+        // Fetch rules lines
+        List<String> lines = pluginList(player, path);
+        String name = "&6Server Rules";
+        List<String> lore = Collections.emptyList();
+        if (!lines.isEmpty()) {
+            String first = lines.get(0);
+            name = first;
+            lore = lines.stream().skip(1).collect(Collectors.toList());
+        }
+
+        // Center slot item for rules
+        int center = (rows * 9) / 2;
+        ItemStack book = new ItemStack(Material.BOOK);
+        ItemMeta meta = book.getItemMeta();
+        if (meta != null) {
+            // Use Adventure -> legacy conversion so MiniMessage tags in messages.yml render correctly
+            final int total = plugin.playersToDate();
+            meta.setDisplayName(plugin.toLegacyString(name, player, total));
+            if (!lore.isEmpty()) {
+                List<String> loreLegacy = lore.stream().map(s -> plugin.toLegacyString(s, player, total)).collect(Collectors.toList());
+                meta.setLore(loreLegacy);
+            }
+            book.setItemMeta(meta);
+        }
+        inv.setItem(center, book);
+
+        // Back button
+        ItemStack back = new ItemStack(Material.BARRIER);
+        ItemMeta bm = back.getItemMeta();
+        if (bm != null) {
+            bm.setDisplayName(FirstLogin.colorizeWithHex("&cBack"));
+            back.setItemMeta(bm);
+        }
+        int backSlot = center + 9 < rows * 9 ? center + 9 : (rows * 9) - 1;
+        inv.setItem(backSlot, back);
+        actions.put(backSlot, new GuiAction("back_btn", null, "back", false, 0, false, null, 1.0f, 1.0f));
+
+        openActions.put(player.getUniqueId(), actions);
+        player.openInventory(inv);
     }
 
     private String pluginMsg(Player p, String path) {
-        try {
-            java.lang.reflect.Method m = FirstLogin.class.getDeclaredMethod("msgFor", org.bukkit.entity.Player.class, String.class);
-            m.setAccessible(true);
-            Object out = m.invoke(plugin, p, path);
-            if (out instanceof String) return (String) out;
-        } catch (Throwable ignored) { }
-        return "";
+        return plugin.msgFor(p, path);
     }
 
     // Public entry points for commands
     public void acceptRules(Player player) {
         setFlag(player.getUniqueId(), versionedFlagName("rules"), true);
         String ok = pluginMsg(player, "messages.gui.accepted");
-        if (!ok.isEmpty()) player.sendMessage(FirstLogin.colorizeWithHex(ok));
+        if (!ok.isEmpty()) sendTo(player, ok);
         runRulesAcceptedCommands(player);
     }
 
@@ -159,32 +200,100 @@ public class WelcomeGui implements Listener {
         execute(player, a);
     }
 
-    @EventHandler
+    // Enforce cancellation in case other plugins un-cancel later
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
+    public void onInventoryClickMonitor(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) return;
+        Player player = (Player) event.getWhoClicked();
+        if (!openActions.containsKey(player.getUniqueId())) return;
+        event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player)) return;
-        if (!(event.getView().getTopInventory().getHolder() instanceof WelcomeHolder)) return;
-
-        event.setCancelled(true);
         Player player = (Player) event.getWhoClicked();
-        Map<Integer, GuiAction> actions = openActions.getOrDefault(player.getUniqueId(), Collections.emptyMap());
+        Map<Integer, GuiAction> actions = openActions.get(player.getUniqueId());
+        if (actions == null) return; // our GUI not open for this player
+
+        // Block all interactions while our GUI is open
+        event.setCancelled(true);
+
+        // Only process clicks that target the top inventory's slots
+        int topSize = event.getView().getTopInventory().getSize();
         int rawSlot = event.getRawSlot();
-        if (rawSlot < 0 || rawSlot >= event.getView().getTopInventory().getSize()) return; // only top inv slots
+        if (rawSlot < 0 || rawSlot >= topSize) return;
 
         GuiAction a = actions.get(rawSlot);
         if (a == null) return;
         execute(player, a);
     }
 
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onInventoryDrag(InventoryDragEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) return;
+        Player player = (Player) event.getWhoClicked();
+        if (!openActions.containsKey(player.getUniqueId())) return;
+        // Cancel all drags when our GUI is open
+        event.setCancelled(true);
+    }
+
+    // Enforce drag cancellation at MONITOR as well
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
+    public void onInventoryDragMonitor(InventoryDragEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) return;
+        Player player = (Player) event.getWhoClicked();
+        if (!openActions.containsKey(player.getUniqueId())) return;
+        event.setCancelled(true);
+    }
+
     @EventHandler
     public void onInventoryClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player)) return;
-        if (!(event.getView().getTopInventory().getHolder() instanceof WelcomeHolder)) return;
-        boolean block = FirstLogin.config.getBoolean("welcomeGui.blockCloseUntilAccepted", false);
-        if (!block) return;
-        Player p = (Player) event.getPlayer();
-        if (!getFlag(p.getUniqueId(), "rules")) {
-            // Reopen next tick
-            Bukkit.getScheduler().runTask(plugin, () -> openFor(p));
+        final Player p = (Player) event.getPlayer();
+        final UUID uuid = p.getUniqueId();
+        if (!openActions.containsKey(uuid)) return;
+
+        final boolean block = FirstLogin.config.getBoolean("welcomeGui.blockCloseUntilAccepted", false);
+        // Defer cleanup one tick to let inventory transitions (our GUI -> our GUI) settle
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            // If player still has our GUI open, keep tracking; do nothing
+            Inventory top = p.getOpenInventory() != null ? p.getOpenInventory().getTopInventory() : null;
+            if (top != null && top.getHolder() instanceof WelcomeHolder) return;
+
+            // No longer viewing our GUI: clear actions
+            openActions.remove(uuid);
+
+            // Optionally reopen if rules must be accepted
+            if (block && !getFlag(uuid, "rules")) {
+                openFor(p);
+            }
+        });
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onPlayerDropItem(PlayerDropItemEvent event) {
+        Player p = event.getPlayer();
+        if (openActions.containsKey(p.getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    // Block creative mode inventory actions as well
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onInventoryCreative(InventoryCreativeEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) return;
+        Player player = (Player) event.getWhoClicked();
+        if (!openActions.containsKey(player.getUniqueId())) return;
+        event.setCancelled(true);
+    }
+
+    // Prevent swapping items between hands while GUI is open
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onSwapHand(PlayerSwapHandItemsEvent event) {
+        Player p = event.getPlayer();
+        if (openActions.containsKey(p.getUniqueId())) {
+            event.setCancelled(true);
         }
     }
 
@@ -195,7 +304,7 @@ public class WelcomeGui implements Listener {
                 String flag = a.requires.substring("flag:".length());
                 if (!getFlag(player.getUniqueId(), flag)) {
                     String need = pluginMsg(player, "messages.gui.needAccept");
-                    if (!need.isEmpty()) player.sendMessage(FirstLogin.colorizeWithHex(need));
+                    if (!need.isEmpty()) sendTo(player, need);
                     playDeny(player);
                     return;
                 }
@@ -205,7 +314,7 @@ public class WelcomeGui implements Listener {
         // Cooldown / once
         if (a.once && getFlag(player.getUniqueId(), a.key)) {
             String msg = pluginMsg(player, "messages.gui.alreadyClaimed");
-            if (!msg.isEmpty()) player.sendMessage(FirstLogin.colorizeWithHex(msg));
+            if (!msg.isEmpty()) sendTo(player, msg);
             playDeny(player);
             return;
         }
@@ -213,7 +322,7 @@ public class WelcomeGui implements Listener {
             long rem = cooldownRemaining(player.getUniqueId(), a.key, a.cooldownSeconds);
             if (rem > 0) {
                 String msg = pluginMsg(player, "messages.gui.onCooldown");
-                if (!msg.isEmpty()) player.sendMessage(FirstLogin.colorizeWithHex(msg.replace("{time}", formatDuration(rem))));
+                if (!msg.isEmpty()) sendTo(player, msg.replace("{time}", formatDuration(rem)));
                 playDeny(player);
                 return;
             }
@@ -226,7 +335,7 @@ public class WelcomeGui implements Listener {
                 setFlag(player.getUniqueId(), flag, true);
                 if (flag.equalsIgnoreCase("rules")) runRulesAcceptedCommands(player);
                 String ok = pluginMsg(player, "messages.gui.accepted");
-                if (!ok.isEmpty()) player.sendMessage(FirstLogin.colorizeWithHex(ok));
+                if (!ok.isEmpty()) sendTo(player, ok);
                 openFor(player);
             } else if (a.action.startsWith("command:")) {
                 String cmd = a.action.substring("command:".length());
@@ -234,19 +343,25 @@ public class WelcomeGui implements Listener {
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
             } else if (a.action.startsWith("message:")) {
                 String path = a.action.substring("message:".length());
+                if (path.equalsIgnoreCase("messages.rules") || path.toLowerCase(Locale.ROOT).endsWith(".rules")) {
+                    openRulesFor(player, path);
+                    return;
+                }
+                // Default behavior: send messages via Adventure
                 List<String> lines = pluginList(player, path);
                 if (!lines.isEmpty()) {
-                    for (String line : lines) player.sendMessage(FirstLogin.colorizeWithHex(withPlaceholders(player, line)));
+                    for (String line : lines) sendTo(player, withPlaceholders(player, line));
                 }
+            } else if (a.action.equals("back")) {
+                openFor(player);
+                return;
             } else if (a.action.startsWith("url:")) {
                 String url = a.action.substring("url:".length());
                 // Prefer clickable link via Adventure if available
                 try {
-                    java.lang.reflect.Method m = FirstLogin.class.getDeclaredMethod("sendClickableLink", Player.class, String.class, String.class);
-                    m.setAccessible(true);
-                    m.invoke(plugin, player, FirstLogin.colorizeWithHex("&bDiscord"), url);
+                    plugin.sendClickableLink(player, FirstLogin.colorizeWithHex("&bDiscord"), url);
                 } catch (Throwable t) {
-                    player.sendMessage(FirstLogin.colorizeWithHex("&bLink: &f" + url));
+                    sendTo(player, "&bLink: &f" + url);
                 }
                 player.closeInventory();
             }
@@ -296,17 +411,14 @@ public class WelcomeGui implements Listener {
     }
 
     private List<String> pluginList(Player p, String path) {
-        try {
-            java.lang.reflect.Method m = FirstLogin.class.getDeclaredMethod("msgListFor", org.bukkit.entity.Player.class, String.class);
-            m.setAccessible(true);
-            Object out = m.invoke(plugin, p, path);
-            if (out instanceof java.util.List) {
-                @SuppressWarnings("unchecked")
-                List<String> list = (List<String>) out;
-                return list;
-            }
-        } catch (Throwable ignored) { }
-        return Collections.emptyList();
+        return plugin.msgListFor(p, path);
+    }
+
+    private void sendTo(Player player, String text) {
+        if (text == null || text.isEmpty()) return;
+        int total = plugin.playersToDate();
+        // Send via Adventure/MiniMessage path in FirstLogin
+        plugin.sendMsg(player, text, player, total);
     }
 
     private boolean getFlag(UUID uuid, String flag) {
@@ -327,14 +439,15 @@ public class WelcomeGui implements Listener {
     }
 
     private void persist() {
-        try {
-            java.lang.reflect.Method m = FirstLogin.class.getDeclaredMethod("savePlayers");
-            m.setAccessible(true);
-            m.invoke(plugin);
-        } catch (Throwable ignored) { }
+        plugin.savePlayers();
     }
 
     private static class WelcomeHolder implements InventoryHolder {
+        @SuppressWarnings("unused")
+        private final boolean rulesView;
+        private WelcomeHolder(boolean rulesView) {
+            this.rulesView = rulesView;
+        }
         @Override
         public Inventory getInventory() {
             return null; // not used, only for identification

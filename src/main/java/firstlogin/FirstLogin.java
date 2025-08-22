@@ -51,6 +51,12 @@ public class FirstLogin extends JavaPlugin {
     // Welcome GUI
     WelcomeGui welcomeGui;
 
+    // Cached count of players to-date to avoid repeated filesystem scans on main thread
+    private volatile int cachedPlayersToDate = -1;
+    private volatile long cachedPlayersToDateAt = 0L;
+    private static final long PLAYERS_TO_DATE_TTL_MS = 30_000L; // 30s
+    private volatile boolean computingPlayersToDate = false;
+
     @Override
     public void onEnable() {
         // config.yml
@@ -113,6 +119,9 @@ public class FirstLogin extends JavaPlugin {
 
         String ver = getDescription().getVersion();
         log.info("FirstLogin " + ver + " - Enabled");
+
+        // Warm up players-to-date cache asynchronously to avoid first-use stall
+        Bukkit.getScheduler().runTaskAsynchronously(this, this::refreshPlayersToDate);
     }
 
     @Override
@@ -126,7 +135,7 @@ public class FirstLogin extends JavaPlugin {
         log.info("FirstLogin " + ver + " - Disabled");
     }
 
-    void savePlayers() {
+    public void savePlayers() {
         try {
             players.save(playersFile);
         } catch (IOException e) {
@@ -595,9 +604,10 @@ public class FirstLogin extends JavaPlugin {
 
                 // Visuals (title/actionbar/sound)
                 plugin.handleFirstJoinVisuals(player);
-                // Open Welcome GUI if enabled
+                // Open Welcome GUI if enabled (configurable delay to avoid NMS initMenu stalls)
                 if (plugin.welcomeGui != null && plugin.welcomeGui.isEnabled()) {
-                    plugin.welcomeGui.openFor(player);
+                    long delay = Math.max(1L, config.getLong("welcomeGui.openDelayTicks", 40L));
+                    Bukkit.getScheduler().runTaskLater(plugin, () -> plugin.welcomeGui.openFor(player), delay);
                 }
                 return;
             }
@@ -709,15 +719,14 @@ public class FirstLogin extends JavaPlugin {
         }
     }
 
-    private String msgFor(Player p, String path) {
+    public String msgFor(Player p, String path) {
         YamlConfiguration yc = messagesFor(playerLocaleTag(p));
         String s = yc.getString(path);
         if (s == null) s = messages.getString(path, "");
         return s == null ? "" : s;
     }
 
-    @SuppressWarnings("unused")
-    private List<String> msgListFor(Player p, String path) {
+    public List<String> msgListFor(Player p, String path) {
         YamlConfiguration yc = messagesFor(playerLocaleTag(p));
         List<String> list = yc.getStringList(path);
         if (list == null || list.isEmpty()) {
@@ -733,33 +742,32 @@ public class FirstLogin extends JavaPlugin {
         return "rules_v" + ver;
     }
 
+    public String toLegacyString(String text, Player context, int total) {
+        Component c = parseToComponent(text, context, total);
+        return LegacyComponentSerializer.legacySection().serialize(c);
+    }
+
     private void broadcastFormatted(String text, Player context, int total) {
-        // Send to all players and console with chosen formatting
-        if (config.getBoolean("formatting.useMiniMessage", true)) {
-            Component c = parseToComponent(text, context, total);
-            for (Player p : Bukkit.getOnlinePlayers()) {
-                adventure.player(p).sendMessage(c);
-            }
-            adventure.console().sendMessage(c);
-        } else {
-            String legacy = applyAllPlaceholders(text, context, total);
-            Bukkit.getServer().broadcastMessage(colorize(legacy));
+        // Always parse to a Component so MiniMessage and legacy (with hex) both work
+        Component c = parseToComponent(text, context, total);
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            adventure.player(p).sendMessage(c);
         }
+        adventure.console().sendMessage(c);
     }
 
-    private void sendMsg(CommandSender target, String text, Player context, int total) {
-        if (config.getBoolean("formatting.useMiniMessage", true)) {
-            Component c = parseToComponent(text, context, total);
-            adventure.sender(target).sendMessage(c);
-        } else {
-            String legacy = applyAllPlaceholders(text, context, total);
-            target.sendMessage(colorize(legacy));
-        }
+    public void sendMsg(CommandSender target, String text, Player context, int total) {
+        // Always use Adventure with parseToComponent so MiniMessage and legacy (with hex) both work
+        Component c = parseToComponent(text, context, total);
+        adventure.sender(target).sendMessage(c);
     }
 
-    // Clickable link helper for GUI URLs
-    @SuppressWarnings("unused") // Used by WelcomeGui via reflection
-    private void sendClickableLink(Player player, String label, String url) {
+    // Overload to match historic call sites accepting Player explicitly
+    public void sendMsg(Player target, String text, Player context, int total) {
+        sendMsg((CommandSender) target, text, context, total);
+    }
+
+    public void sendClickableLink(Player player, String label, String url) {
         Component base = LegacyComponentSerializer.legacySection().deserialize(label);
         Component clickable = base.clickEvent(ClickEvent.openUrl(url))
                 .hoverEvent(HoverEvent.showText(Component.text(url)));
@@ -768,12 +776,14 @@ public class FirstLogin extends JavaPlugin {
 
     private Component parseToComponent(String text, Player context, int total) {
         String with = applyAllPlaceholders(text, context, total);
-        // If MiniMessage-style tags are present, use MiniMessage. If legacy '&' codes are present, parse via legacy.
+        // If MiniMessage-style tags are present, use MiniMessage. Otherwise, handle legacy ('&' or '§') including hex.
         if (with.indexOf('<') >= 0 && with.indexOf('>') > with.indexOf('<')) {
             return mm.deserialize(with);
         }
-        if (with.contains("&")) {
-            return LegacyComponentSerializer.legacyAmpersand().deserialize(with);
+        if (with.indexOf('&') >= 0 || with.indexOf('§') >= 0) {
+            // Convert any legacy codes (including hex like <#RRGGBB> or &#RRGGBB) to section-coded string, then deserialize
+            String legacy = colorizeWithHex(with);
+            return LegacyComponentSerializer.legacySection().deserialize(legacy);
         }
         return Component.text(with);
     }
@@ -842,6 +852,26 @@ public class FirstLogin extends JavaPlugin {
     }
 
     private int countPlayersToDate() {
+        long now = System.currentTimeMillis();
+        int cached = this.cachedPlayersToDate;
+        if (cached >= 0 && (now - this.cachedPlayersToDateAt) < PLAYERS_TO_DATE_TTL_MS) {
+            return cached;
+        }
+        // Stale: trigger async refresh if not already computing, but return last known (non-blocking)
+        if (!computingPlayersToDate) {
+            computingPlayersToDate = true;
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    refreshPlayersToDate();
+                } finally {
+                    computingPlayersToDate = false;
+                }
+            });
+        }
+        return cached >= 0 ? cached : 0;
+    }
+
+    private void refreshPlayersToDate() {
         String worldName = config.getString("World.name", "world");
         File worldFolder = Bukkit.getWorld(worldName) != null
                 ? Bukkit.getWorld(worldName).getWorldFolder()
@@ -852,6 +882,12 @@ public class FirstLogin extends JavaPlugin {
             File[] files = playerDataDir.listFiles((dir, name) -> name.endsWith(".dat"));
             if (files != null) count = files.length;
         }
-        return count;
+        this.cachedPlayersToDate = count;
+        this.cachedPlayersToDateAt = System.currentTimeMillis();
+    }
+
+    // Public accessor for WelcomeGui (avoid reflection)
+    public int playersToDate() {
+        return countPlayersToDate();
     }
 }
