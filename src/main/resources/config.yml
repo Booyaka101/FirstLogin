@@ -1,4 +1,4 @@
-# Made by Bush
+# Made by BooPug Studios
 # For GlobalMessage the player name will be displayed before the message, ex <player>: message.
 # This plugin is still in its beta phase and will be updated shortly.
 # Set the World name property to your current world's name:
@@ -22,3 +22,36 @@ messageBack:
   enabled: true
   string: "first time user logged in"
   color: "&f"
+
+# Formatting and features
+formatting:
+  useMiniMessage: true     # If true, use MiniMessage for messages/titles/actionbar. Otherwise legacy & codes.
+  usePlaceholders: true    # Enable built-in placeholders like {player}, {online}, {total}, {owner}
+  usePlaceholderAPI: true  # If PlaceholderAPI is installed and this is true, resolve PAPI placeholders
+
+# First-join visuals
+firstJoinVisuals:
+  title:
+    enabled: true
+    title: "<green>Welcome, {player}!"
+    subtitle: "<gray>Enjoy your stay."
+    fadeIn: 10
+    stay: 60
+    fadeOut: 10
+  actionbar:
+    enabled: false
+    message: "<yellow>First time here!"
+  sound:
+    enabled: false
+    name: "ENTITY_PLAYER_LEVELUP"  # Bukkit sound enum name
+    volume: 1.0
+    pitch: 1.0
+
+# Returning player gating: only send messageBack if offline for at least this many days
+returningGate:
+  minDaysOffline: 0
+
+# Metrics (bStats)
+metrics:
+  enabled: true
+  pluginId: 27008 # Replace with your bStats plugin ID when available

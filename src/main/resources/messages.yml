@@ -1,0 +1,12 @@
+# Translatable messages for FirstLogin
+messages:
+  noPermission: "<red>You don't have permission."
+  reloaded: "<green>FirstLogin reloaded."
+  usageSeen: "<gray>Usage: /firstlogin seen <player>"
+  usageReset: "<gray>Usage: /firstlogin reset <player|all>"
+  seenTrue: "<yellow>{player} was already marked as greeted."
+  seenFalse: "<green>{player} was not marked as greeted."
+  resetPlayer: "<green>Reset greeting flag for {player}."
+  resetAll: "<green>Reset greeting flags for all players."
+  helpHeader: "<gold>FirstLogin commands:"
+  helpLine: "<gray>/firstlogin <reload|seen <player>|reset <player|all>>"

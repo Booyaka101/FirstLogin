@@ -1,9 +1,11 @@
 name: FirstLogIn
 main: firstlogin.FirstLogin
-version: 1.4
+version: 1.6
 api-version: '1.20'
-author: Bush
+author: BooPug Studios
 description: First login messages and stats (updated for 1.20.1+)
+softdepend:
+  - PlaceholderAPI
 commands:
   listp:
     description: shows number of ppl on server
@@ -20,3 +22,26 @@ commands:
   firsthelp:
     description: shows all the commands.
     usage: /firsthelp
+  firstlogin:
+    description: Admin commands for FirstLogin
+    usage: /firstlogin <reload|seen|reset>
+    aliases: [fl, flogin]
+permissions:
+  firstlogin.admin:
+    description: Allows use of /firstlogin admin commands
+    default: op
+  firstlogin.command.listp:
+    description: Allows use of /listp
+    default: op
+  firstlogin.command.pnames:
+    description: Allows use of /pnames
+    default: op
+  firstlogin.command.owner:
+    description: Allows use of /owner
+    default: op
+  firstlogin.command.onlinep:
+    description: Allows use of /onlinep
+    default: op
+  firstlogin.command.firsthelp:
+    description: Allows use of /firsthelp
+    default: true

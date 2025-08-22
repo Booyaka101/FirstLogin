@@ -1,0 +1,116 @@
+[CENTER][IMG]https://i.imgur.com/placeholder.png[/IMG]
+[B][SIZE=6]FirstLogin[/SIZE][/B]
+A welcoming first-join experience with titles, action bar, sounds, and clean MiniMessage formatting (with legacy & colors supported).
+
+[SIZE=4][B]Version:[/B] 1.6  •  [B]Minecraft:[/B] 1.20+  •  [B]Java:[/B] 17  •  [B]Author:[/B] BooPug Studios[/SIZE]
+[/CENTER]
+
+[B]Why FirstLogin?[/B]
+Give new players a warm welcome and a tasteful first impression. FirstLogin is simple, lightweight, and focused on a polished onboarding moment.
+
+[B]Features[/B]
+[LIST]
+[*] Global + private welcome messages
+[*] Adventure MiniMessage support (e.g., <green>, <gray>)
+[*] Legacy color code fallback for "&" formatting
+[*] Optional visuals: Title, Action Bar, Sound
+[*] Returning player gate: greet again only if offline X days
+[*] Simple stats: online count and players who have ever joined
+[*] Built-in placeholders: {player}, {online}, {total}, {owner}
+[*] Optional PlaceholderAPI support
+[*] Admin command: /firstlogin (reload, seen, reset)
+[*] bStats metrics (configurable/opt‑out)
+[/LIST]
+
+[B]Commands[/B]
+[LIST]
+[*]/listp – number of players who have joined to date
+[*]/pnames – list of names who have joined to date
+[*]/owner – prints configured server owner
+[*]/onlinep – online/total summary
+[*]/firsthelp – quick help
+[*]/firstlogin reload|seen <player>|reset <player|all> – admin utilities
+[/LIST]
+
+[B]Permissions[/B]
+[LIST]
+[*]firstlogin.admin – use /firstlogin (default: op)
+[*]firstlogin.command.listp – /listp (default: op)
+[*]firstlogin.command.pnames – /pnames (default: op)
+[*]firstlogin.command.owner – /owner (default: op)
+[*]firstlogin.command.onlinep – /onlinep (default: op)
+[*]firstlogin.command.firsthelp – /firsthelp (default: true)
+[/LIST]
+
+[B]Configuration[/B]
+[spoiler="config.yml (highlights)"]
+[CODE=yaml]
+formatting:
+  useMiniMessage: true
+  usePlaceholders: true
+  usePlaceholderAPI: true
+
+firstJoinVisuals:
+  title:
+    enabled: true
+    title: "<green>Welcome, {player}!"
+    subtitle: "<gray>Enjoy your stay."
+    fadeIn: 10
+    stay: 60
+    fadeOut: 10
+  actionbar:
+    enabled: false
+    message: "<yellow>First time here!"
+  sound:
+    enabled: false
+    name: "ENTITY_PLAYER_LEVELUP"
+    volume: 1.0
+    pitch: 1.0
+
+returningGate:
+  minDaysOffline: 0
+
+metrics:
+  enabled: true
+  pluginId: 27008
+[/CODE]
+[/spoiler]
+
+[B]Placeholders[/B]
+[LIST]
+[*]{player} – player name
+[*]{online} – number of online players
+[*]{total} – players who have ever joined
+[*]{owner} – value from config: World.Owner
+[/LIST]
+If PlaceholderAPI is installed and enabled in config, its placeholders will also be resolved in messages.
+
+[B]Installation[/B]
+[LIST=1]
+[*] Drop [I]firstlogin-1.6.jar[/I] into your [I]plugins/[/I] folder
+[*] Start the server to generate configs (config.yml, messages.yml, players.yml)
+[*] Customize your messages and visuals
+[*] Restart the server (recommended over /reload)
+[/LIST]
+
+[B]Requirements[/B]
+[LIST]
+[*] Spigot/Paper 1.20+
+[*] Java 17
+[/LIST]
+
+[B]bStats[/B]
+Anonymous usage statistics help guide development. You can opt out globally via [I]plugins/bStats/config.yml[/I] or disable this plugin’s metrics in [I]config.yml[/I].
+
+[B]What’s New in 1.6[/B]
+[LIST]
+[*] MiniMessage formatting with seamless legacy "&" fallback
+[*] Title/Action Bar/Sound options for first join
+[*] New admin command: /firstlogin (reload, seen, reset)
+[*] Returning player gate via minDaysOffline
+[*] Placeholder support (built‑in + optional PlaceholderAPI)
+[*] Cleaner logs, dependency shading, and general polish
+[/LIST]
+
+[B]Support[/B]
+Questions or suggestions? Post in the discussion thread or reach out to BooPug Studios.
