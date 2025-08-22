@@ -1,0 +1,24 @@
+# Made by Bush
+# For GlobalMessage the player name will be displayed before the message, ex <player>: message.
+# This plugin is still in its beta phase and will be updated shortly.
+# Set the World name property to your current world's name:
+# Set the World owner property to your name:
+
+World:
+  name: world
+  Owner: default
+
+messageGlobal:
+  enabled: true
+  string: "first time user logged in"
+  color: "&f"
+
+message:
+  enabled: true
+  string: "Welcome to the server"
+  color: "&f"
+
+messageBack:
+  enabled: true
+  string: "first time user logged in"
+  color: "&f"

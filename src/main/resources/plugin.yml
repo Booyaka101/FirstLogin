@@ -1,0 +1,22 @@
+name: FirstLogIn
+main: me.bush.firstlogin.FirstLogin
+version: 1.4
+api-version: '1.20'
+author: Bush
+description: First login messages and stats (updated for 1.20.1+)
+commands:
+  listp:
+    description: shows number of ppl on server
+    usage: /listp
+  pnames:
+    description: lists the names of the ppl on the server
+    usage: /pnames
+  owner:
+    description: shows the owner of the server
+    usage: /owner
+  onlinep:
+    description: shows the number of currently online players
+    usage: /onlinep
+  firsthelp:
+    description: shows all the commands.
+    usage: /firsthelp
