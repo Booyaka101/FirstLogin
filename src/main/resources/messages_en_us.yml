@@ -1,4 +1,4 @@
-# Translatable messages for FirstLogin
+# Translatable messages for FirstLogin (en_US)
 messages:
   noPermission: "<red>You don't have permission."
   reloaded: "<green>FirstLogin reloaded."

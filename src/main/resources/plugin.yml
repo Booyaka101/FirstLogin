@@ -1,6 +1,6 @@
 name: FirstLogIn
 main: firstlogin.FirstLogin
-version: 1.6
+version: 1.7
 api-version: '1.20'
 author: BooPug Studios
 description: First login messages and stats (updated for 1.20.1+)
@@ -24,7 +24,7 @@ commands:
     usage: /firsthelp
   firstlogin:
     description: Admin commands for FirstLogin
-    usage: /firstlogin <reload|seen|reset>
+    usage: '/firstlogin <locale <locale|reset>|reload|seen <player>|reset <player|all>|gui <open|accept|trigger>|clearcooldown <player> <key|all>|clearflag <player> <flag|all>>'
     aliases: [fl, flogin]
 permissions:
   firstlogin.admin:

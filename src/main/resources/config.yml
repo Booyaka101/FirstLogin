@@ -51,6 +51,73 @@ firstJoinVisuals:
 returningGate:
   minDaysOffline: 0
 
+# Welcome GUI (shown on first join when enabled)
+welcomeGui:
+  enabled: false
+  rows: 3
+  title: "&aWelcome"
+  # Prevent closing until rules are accepted
+  blockCloseUntilAccepted: true
+  # Bump when rules change to force re-acceptance: flags will be stored as rules_v<version>
+  rulesVersion: 1
+  # Optional commands to run when rules are accepted (from console)
+  onRulesAccepted:
+    commands: [] # e.g. ["say {player} accepted the rules"]
+  items:
+    rules:
+      slot: 11
+      material: PAPER
+      name: "&eView &6Rules"
+      lore:
+        - "&7Click to read the rules."
+      action: "message:messages.rules"
+      closeOnClick: false
+      clickSound:
+        name: UI_BUTTON_CLICK
+        volume: 1.0
+        pitch: 1.2
+    accept_rules:
+      slot: 12
+      material: LIME_DYE
+      name: "&aAccept Rules"
+      lore:
+        - "&7Click to accept the rules."
+      action: "flag:set:rules"
+      closeOnClick: false
+      clickSound:
+        name: UI_TOAST_CHALLENGE_COMPLETE
+        volume: 0.8
+        pitch: 1.0
+    discord:
+      slot: 14
+      material: AMETHYST_SHARD
+      name: "&bJoin our Discord"
+      lore:
+        - "&7Click to get the link."
+      action: "url:https://discord.gg/yourinvite"
+      closeOnClick: true
+      clickSound:
+        name: UI_BUTTON_CLICK
+        volume: 1.0
+        pitch: 1.0
+    starter_kit:
+      slot: 15
+      material: CHEST
+      name: "&6Claim Starter Kit"
+      lore:
+        - "&7Receive some basic items."
+        - "&8Requires: Rules accepted"
+      requires: "flag:rules"
+      action: "command:give {player} bread 8"
+      # Allow only once or set a cooldown
+      once: true
+      cooldownSeconds: 0
+      closeOnClick: true
+      clickSound:
+        name: ENTITY_PLAYER_LEVELUP
+        volume: 1.0
+        pitch: 1.2
+
 # Metrics (bStats)
 metrics:
   enabled: true

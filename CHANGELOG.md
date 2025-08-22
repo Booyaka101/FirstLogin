@@ -1,5 +1,19 @@
 # FirstLogin – Changelog
 
+## 1.7 (2025‑08‑22)
+
+- New: Full tab completion for `/firstlogin` subcommands
+  - `locale <locale|reset>` with dynamic locale tag discovery from data folder
+  - `clearcooldown <player> <key|all>`
+  - `clearflag <player> <flag|all>`
+  - `gui <open|accept|trigger>`
+  - `seen <player>` / `reset <player|all>` suggest player names
+- New: Automatic extraction of bundled locale files (`messages_*.yml`) to the plugin data folder on startup and on `/firstlogin reload`
+- Update: `plugin.yml` usage reflects new subcommands
+- Update: `messages.yml` and `messages_en_us.yml` include keys for new commands
+- Internal: Refactored `onTabComplete` and deduped locale extraction on reload
+- Build: Bump version to 1.7
+
 ## 1.6 (2025‑08‑22)
 
 - New: MiniMessage formatting with legacy color fallback
