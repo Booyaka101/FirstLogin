@@ -1,5 +1,5 @@
 name: FirstLogIn
-main: me.bush.firstlogin.FirstLogin
+main: firstlogin.FirstLogin
 version: 1.4
 api-version: '1.20'
 author: Bush

@@ -1,4 +1,4 @@
-package me.bush.firstlogin;
+package firstlogin;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -8,6 +8,9 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -48,8 +51,8 @@ public class FirstLogin extends JavaPlugin {
         players.options().header("This is a list of players who had joined before but first joined again after the plugin was installed.");
         savePlayers();
 
-        // Register listener
-        Bukkit.getPluginManager().registerEvents(new FirstLoginListener(this), this);
+        // Register listener (inner class)
+        Bukkit.getPluginManager().registerEvents(new JoinListener(this), this);
 
         log.info("FirstLogin 1.4 (updated) - Enabled");
     }
@@ -156,5 +159,46 @@ public class FirstLogin extends JavaPlugin {
 
     static String colorize(String input) {
         return ChatColor.translateAlternateColorCodes('&', input);
+    }
+
+    // Inner join listener to reduce file count
+    private static class JoinListener implements Listener {
+        private final FirstLogin plugin;
+        public JoinListener(FirstLogin plugin) { this.plugin = plugin; }
+
+        @EventHandler
+        public void onPlayerJoin(org.bukkit.event.player.PlayerJoinEvent event) {
+            Player player = event.getPlayer();
+
+            boolean isFirstEverJoin = !player.hasPlayedBefore();
+
+            if (isFirstEverJoin) {
+                // Global first-join message
+                if (FirstLogin.config.getBoolean("messageGlobal.enabled", true)) {
+                    String msg = FirstLogin.config.getString("messageGlobal.string", "first time user logged in");
+                    String color = FirstLogin.config.getString("messageGlobal.color", "&f");
+                    Bukkit.getServer().broadcastMessage(FirstLogin.colorize(color + player.getDisplayName() + ": " + msg));
+                }
+                // Private first-join message
+                if (FirstLogin.config.getBoolean("message.enabled", true)) {
+                    String msg = FirstLogin.config.getString("message.string", "Welcome to the server");
+                    String color = FirstLogin.config.getString("message.color", "&f");
+                    player.sendMessage(FirstLogin.colorize(color + msg));
+                }
+                return;
+            }
+
+            // Returning player: only send once after plugin installed (tracked in players.yml)
+            String key = "players." + player.getUniqueId();
+            boolean seen = FirstLogin.players.getBoolean(key, false);
+            if (!seen && FirstLogin.config.getBoolean("messageBack.enabled", true)) {
+                FirstLogin.players.set(key, true);
+                plugin.savePlayers();
+
+                String msg = FirstLogin.config.getString("messageBack.string", "first time user logged in");
+                String color = FirstLogin.config.getString("messageBack.color", "&f");
+                player.sendMessage(FirstLogin.colorize(color + msg));
+            }
+        }
     }
 }
