@@ -1,12 +1,15 @@
 name: FirstLogIn
 main: firstlogin.FirstLogin
-version: 1.7.1
+version: 1.7.2
 api-version: '1.20'
 author: BooPug Studios
 description: First login messages and stats (updated for 1.20.1+)
 softdepend:
   - PlaceholderAPI
 commands:
+  welcome:
+    description: Opens the FirstLogin Welcome GUI
+    usage: /welcome [page]
   listp:
     description: shows number of ppl on server
     usage: /listp
@@ -24,11 +27,48 @@ commands:
     usage: /firsthelp
   firstlogin:
     description: Admin commands for FirstLogin
-    usage: '/firstlogin <locale <locale|reset>|reload|seen <player>|reset <player|all>|gui <open|accept|trigger>|clearcooldown <player> <key|all>|clearflag <player> <flag|all>>'
+    usage: '/firstlogin <locale <tag|reset>|reload|seen <player>|status [player]|reset <player|all>|gui <open [player]|accept [player]|trigger <key> [player]>|clearcooldown <player> <key|all>|clearflag <player> <flag|all>|set <key> <value>|metrics [reset]>'
     aliases: [fl, flogin]
 permissions:
   firstlogin.admin:
     description: Allows use of /firstlogin admin commands
+    default: op
+    children:
+      firstlogin.admin.reload: true
+      firstlogin.admin.gui: true
+      firstlogin.admin.clearcooldown: true
+      firstlogin.admin.clearflag: true
+      firstlogin.admin.seen: true
+      firstlogin.admin.reset: true
+      firstlogin.admin.status: true
+      firstlogin.admin.set: true
+      firstlogin.admin.metrics: true
+  firstlogin.admin.reload:
+    description: Allows use of /firstlogin reload
+    default: op
+  firstlogin.admin.gui:
+    description: Allows use of /firstlogin gui subcommands
+    default: op
+  firstlogin.admin.clearcooldown:
+    description: Allows use of /firstlogin clearcooldown
+    default: op
+  firstlogin.admin.clearflag:
+    description: Allows use of /firstlogin clearflag
+    default: op
+  firstlogin.admin.seen:
+    description: Allows use of /firstlogin seen
+    default: op
+  firstlogin.admin.reset:
+    description: Allows use of /firstlogin reset <player|all>
+    default: op
+  firstlogin.admin.status:
+    description: Allows use of /firstlogin status [player]
+    default: op
+  firstlogin.admin.set:
+    description: Allows use of /firstlogin set <key> <value>
+    default: op
+  firstlogin.admin.metrics:
+    description: Allows use of /firstlogin metrics [reset]
     default: op
   firstlogin.command.listp:
     description: Allows use of /listp
@@ -45,3 +85,6 @@ permissions:
   firstlogin.command.firsthelp:
     description: Allows use of /firsthelp
     default: true
+  firstlogin.bypass.rules:
+    description: Allows bypassing forced Welcome GUI reopen on close when rules not yet accepted
+    default: false

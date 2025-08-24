@@ -19,6 +19,7 @@ messages:
   clearedAllFlags: "<green>Cleared all flags for {player}."
   gui:
     opened: "<gray>Opened welcome menu."
+    noPermission: "<red>You don't have permission to use that."
     needAccept: "<red>You must accept the rules first."
     accepted: "<green>Rules accepted!"
     onCooldown: "<red>That is on cooldown. Try again in {time}."

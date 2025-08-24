@@ -1,6 +1,32 @@
 # FirstLogin – Changelog
 
-## 1.7.1 (2025‑08‑22)
+## 1.7.2 (2025‑08‑24)
+
+- Add: Optional confirmation dialog before accepting rules in the Welcome GUI (`welcomeGui.confirmOnAccept`)
+- Add: In-plugin telemetry counters for daily GUI opens and rules accepted; view/reset via `/firstlogin metrics [reset]`
+- Add: Runtime command toggles via `/firstlogin set <key> <value>` (no file edit required)
+  - Keys: `welcomeGui.reopenOnJoinUntilAccepted`, `welcomeGui.blockCloseUntilAccepted`, `welcomeGui.confirmOnAccept`, `welcomeGui.rulesVersion`, `debug.gui`, `debug.inventory`
+- Add: Granular admin permissions for each `/firstlogin` subcommand under `firstlogin.admin.*`
+- Add: New admin subcommands with tab-completion: `set`, `metrics`
+- Update: `plugin.yml` usage expanded and permissions detailed for new subcommands
+
+- Change: Switch Welcome GUI persistence to asynchronous player data saving (non-blocking writes to `players.yml`)
+
+- Add: Persist player timestamps to `players.yml`
+  - `timestamps.<uuid>.first_join` – epoch millis of first join (fallback to Bukkit firstPlayed)
+  - `timestamps.<uuid>.rules_accepted` – epoch millis when rules were accepted
+- Add: PlaceholderAPI placeholders for timestamps and status
+  - `%firstlogin_first_join_date%`, `%firstlogin_rules_accepted_date%` (formatted via `formatting.datePattern`)
+  - `%firstlogin_days_since_first_join%`, `%firstlogin_days_since_rules_accepted%`
+  - `%firstlogin_first_join_ts%`, `%firstlogin_rules_accepted_ts%`
+  - `%firstlogin_rules_version_accepted%`, `%firstlogin_rules_pending%`
+- Add: PlaceholderAPI telemetry + join order placeholders
+  - `%firstlogin_gui_opens_today%`, `%firstlogin_rules_accepted_today%`
+  - `%firstlogin_item_clicks_today_<key>%` (per-GUI-item click counter)
+  - `%firstlogin_join_order%` (alias `%firstlogin_join_number%`) – 1-based join order across known players
+- Note: `formatting.datePattern` defaults to `yyyy-MM-dd HH:mm:ss` and can be customized.
+
+## 1.7.1 (2025‑08‑24)
 
 - Fix: Eliminated server stalls when opening the Welcome GUI by removing reflection and opening the GUI after a safer delay
 - Fix: Fully blocked item movement while the Welcome GUI is open (clicks, drags, creative actions, drops, hand swapping)
@@ -11,14 +37,26 @@
 - Internal: Strengthened event handlers in `firstlogin/gui/WelcomeGui.java` at multiple priorities
 - Performance: Players-to-date count warmed up asynchronously on enable to avoid main-thread I/O stalls
 - Build: Bump version to 1.7.1
+- Add: MiniMessage and PlaceholderAPI parsing for GUI item actions (`command:`, `url:`) and on-rules-accepted commands
+- Add: Per-item permission support in Welcome GUI (`items.*.permission`, `items.*.hideIfNoPermission`) and `requires: perm:<node>`
+- Add: `welcomeGui.reopenOnJoinUntilAccepted` to reopen GUI on every join until rules are accepted
+- Add: Debug toggles `debug.gui` and `debug.inventory` with detailed GUI/inventory cancel logs
 - Toggleable options
-  - New in 1.7.1: `welcomeGui.openDelayTicks` – delay before opening the Welcome GUI after first join (ticks)
+  - New in 1.7.1:
+    - `welcomeGui.openDelayTicks` – delay before opening the Welcome GUI after first join (ticks)
+    - `welcomeGui.reopenOnJoinUntilAccepted` – reopen GUI on join until rules accepted
+    - `debug.gui`, `debug.inventory` – debug logging for GUI and inventory events
   - Existing toggles (for reference):
     - `formatting.useMiniMessage`, `formatting.usePlaceholders`, `formatting.usePlaceholderAPI`
     - `firstJoinVisuals.title.enabled`, `firstJoinVisuals.actionbar.enabled`, `firstJoinVisuals.sound.enabled`
     - `messageGlobal.enabled`, `message.enabled`, `messageBack.enabled`
     - `welcomeGui.enabled`, `welcomeGui.blockCloseUntilAccepted`
     - `metrics.enabled`
+  - Per-item actions/flags
+    - Actions: `message:`, `url:`, `command:`, `flag:set`
+    - Toggles: `closeOnClick`, `once`, `cooldownSeconds`, `requires`, `clickSound`
+    - Permissions: `permission`, `hideIfNoPermission` and `requires: perm:<node>`
+    - Notes: `requires: "flag:rules"` gates items until rules are accepted; `clickSound` supports `name`, `volume`, and `pitch`
 
 ## 1.7 (2025‑08‑22)
 
@@ -40,7 +78,7 @@
   - Supports Adventure MiniMessage tags (e.g., <green>, <gray>)
   - Seamless fallback for legacy "&" color codes when MiniMessage isn’t used in a line
 - New: First-join visuals (configurable)
-  - Title + subtitle with fade timings
+  - Title + subtitle with fade timings  
   - Optional action bar message
   - Optional sound to celebrate first join
 - New: Admin command `/firstlogin` with subcommands

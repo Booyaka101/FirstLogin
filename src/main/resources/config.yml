@@ -28,6 +28,8 @@ formatting:
   useMiniMessage: true     # If true, use MiniMessage for messages/titles/actionbar. Otherwise legacy & codes.
   usePlaceholders: true    # Enable built-in placeholders like {player}, {online}, {total}, {owner}
   usePlaceholderAPI: true  # If PlaceholderAPI is installed and this is true, resolve PAPI placeholders
+  # Date format used by placeholders like %firstlogin_first_join_date% and %firstlogin_rules_accepted_date%
+  datePattern: "yyyy-MM-dd HH:mm:ss"
 
 # First-join visuals
 firstJoinVisuals:
@@ -58,13 +60,48 @@ welcomeGui:
   title: "&aWelcome"
   # Delay before opening the GUI after first join (ticks). Increase if your server watchdog reports stalls.
   openDelayTicks: 40
+  # When the GUI is forcibly reopened after closing without accepting, wait this many ticks
+  reopenDelayTicks: 1
   # Prevent closing until rules are accepted
   blockCloseUntilAccepted: true
   # Bump when rules change to force re-acceptance: flags will be stored as rules_v<version>
   rulesVersion: 1
+  # Show a confirm dialog when attempting to accept rules from the main GUI
+  confirmOnAccept: false
   # Optional commands to run when rules are accepted (from console)
   onRulesAccepted:
     commands: [] # e.g. ["say {player} accepted the rules"]
+  # Defaults for the confirm/cancel dialog
+  confirmDialog:
+    yes:
+      material: LIME_WOOL
+      name: "&aConfirm"
+      lore:
+        - "&7Click to accept the rules."
+      clickSound:
+        name: UI_TOAST_CHALLENGE_COMPLETE
+        volume: 0.8
+        pitch: 1.0
+    later:
+      enabled: true
+      material: YELLOW_WOOL
+      name: "&eRemind me later"
+      lore:
+        - "&7Close and be reminded later."
+      cooldownSeconds: 60
+      clickSound:
+        name: UI_BUTTON_CLICK
+        volume: 1.0
+        pitch: 1.0
+    no:
+      material: RED_WOOL
+      name: "&cCancel"
+      lore:
+        - "&7Go back without accepting."
+      clickSound:
+        name: UI_BUTTON_CLICK
+        volume: 1.0
+        pitch: 1.0
   items:
     rules:
       slot: 11

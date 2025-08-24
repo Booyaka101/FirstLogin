@@ -2,7 +2,7 @@
 [B][SIZE=6]FirstLogin[/SIZE][/B]
 A welcoming first-join experience with titles, action bar, sounds, and clean MiniMessage formatting (with legacy & colors supported).
 
-[SIZE=4][B]Version:[/B] 1.7.1  •  [B]Minecraft:[/B] 1.20+  •  [B]Java:[/B] 17  •  [B]Author:[/B] BooPug Studios[/SIZE]
+[SIZE=4][B]Version:[/B] 1.7.2  •  [B]Minecraft:[/B] 1.20+  •  [B]Java:[/B] 17  •  [B]Author:[/B] BooPug Studios[/SIZE]
 [/CENTER]
 
 [B]Why FirstLogin?[/B]
@@ -18,7 +18,12 @@ Give new players a warm welcome and a tasteful first impression. FirstLogin is s
 [*] Simple stats: online count and players who have ever joined
 [*] Built-in placeholders: {player}, {online}, {total}, {owner}
 [*] Optional PlaceholderAPI support
-[*] Admin command: /firstlogin (reload, seen, reset)
+[*] Welcome GUI: per-item permission + gating, once/cooldown/closeOnClick, clickSound
+[*] Reopen-on-join until rules are accepted (configurable)
+[*] Optional confirmation dialog before accepting rules in GUI
+[*] Admin command: /firstlogin (reload, seen, reset, gui, clearcooldown, clearflag, set, metrics)
+[*] In-plugin telemetry counters (today): GUI opens, rules accepted
+[*] Asynchronous player data saving (non-blocking players.yml writes)
 [*] bStats metrics (configurable/opt‑out)
 [/LIST]
 
@@ -29,7 +34,7 @@ Give new players a warm welcome and a tasteful first impression. FirstLogin is s
 [*]/owner – prints configured server owner
 [*]/onlinep – online/total summary
 [*]/firsthelp – quick help
-[*]/firstlogin reload|seen <player>|reset <player|all> – admin utilities
+[*]/firstlogin reload|seen <player>|reset <player|all>|gui|clearcooldown|clearflag|set|metrics – admin utilities
 [/LIST]
 
 [B]Permissions[/B]
@@ -95,7 +100,7 @@ If PlaceholderAPI is installed and enabled in config, its placeholders will also
 
 [B]Installation[/B]
 [LIST=1]
-[*] Drop [I]firstlogin-1.7.1.jar[/I] into your [I]plugins/[/I] folder
+[*] Drop [I]firstlogin-1.7.2.jar[/I] into your [I]plugins/[/I] folder
 [*] Start the server to generate configs (config.yml, messages.yml, players.yml)
 [*] Customize your messages and visuals
 [*] Restart the server (recommended over /reload)
@@ -110,13 +115,15 @@ If PlaceholderAPI is installed and enabled in config, its placeholders will also
 [B]bStats[/B]
 Anonymous usage statistics help guide development. You can opt out globally via [I]plugins/bStats/config.yml[/I] or disable this plugin’s metrics in [I]config.yml[/I].
 
-[B]What’s New in 1.7.1[/B]
+[B]What’s New in 1.7.2[/B]
 [LIST]
-[*] Eliminated server stalls when opening the Welcome GUI by removing reflection and opening after a safer delay
-[*] Fully blocked inventory interactions while the Welcome GUI is open (clicks, drags, creative actions, drops, hand swapping)
-[*] Added Player overload for sendMsg and exposed public helpers to avoid reflection
-[*] Increased/validated default welcomeGui.openDelayTicks to 40 ticks to avoid NMS initialization stalls
-[*] Asynchronous warm-up of players-to-date cache on enable to avoid main-thread I/O stalls
+[*] Asynchronous players.yml saving for Welcome GUI state (non-blocking)
+[*] Persisted timestamps: [ICODE]timestamps.<uuid>.first_join[/ICODE], [ICODE]timestamps.<uuid>.rules_accepted[/ICODE]
+[*] PlaceholderAPI: first join + rules dates/epoch, days-since; telemetry counters and join order
+    - [ICODE]%firstlogin_gui_opens_today%[/ICODE], [ICODE]%firstlogin_rules_accepted_today%[/ICODE]
+    - [ICODE]%firstlogin_item_clicks_today_<key>%[/ICODE], [ICODE]%firstlogin_join_order%[/ICODE]
+[*] Telemetry command: [ICODE]/firstlogin metrics[/ICODE] (view/reset today’s counts)
+[*] GUI improvements: reopen-on-join until accepted, optional confirm dialog on accept
 [/LIST]
 
 [B]What’s New in 1.6[/B]
