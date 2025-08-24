@@ -1,0 +1,1 @@
+A lightweight, friendly first-join plugin for Spigot/Paper. Welcomes new players with clean MiniMessage formatting, a configurable Welcome GUI, optional reopen‑until‑accepted rules, async player data saving, telemetry counters, and PlaceholderAPI placeholders (including join order).
