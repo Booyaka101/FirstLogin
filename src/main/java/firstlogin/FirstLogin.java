@@ -76,6 +76,17 @@ public class FirstLogin extends JavaPlugin {
     private volatile boolean playersDirty = false;
     private volatile boolean saveScheduled = false;
     private volatile int scheduledSaveTaskId = -1;
+    // Configurable debounce and debug
+    private long playersSaveDebounceTicks = 20L; // default ~1s
+    private boolean debugSaves = false;
+
+    // ===== Telemetry daily reset scheduling =====
+    private boolean telemetryResetEnabled = true;
+    private String telemetryResetTime = "04:00"; // HH:mm server local time
+    private int telemetryResetTaskId = -1;
+    private long telemetryLastResetTs = 0L; // epoch millis of last reset
+    private long telemetryNextResetTs = 0L; // epoch millis of next scheduled reset (0 if disabled/unknown)
+    private boolean debugTelemetry = false;
 
     @Override
     public void onEnable() {
@@ -83,6 +94,12 @@ public class FirstLogin extends JavaPlugin {
         saveDefaultConfig();
         config = getConfig();
         ensureDefaultConfigValues();
+        // Load runtime toggles
+        try {
+            playersSaveDebounceTicks = Math.max(1L, config.getLong("asyncSave.players.debounceTicks", 20L));
+            debugSaves = config.getBoolean("debug.saves", false);
+            debugTelemetry = config.getBoolean("debug.telemetry", false);
+        } catch (Throwable ignored) {}
 
         // players.yml in plugin data folder
         if (!getDataFolder().exists()) {
@@ -120,6 +137,9 @@ public class FirstLogin extends JavaPlugin {
 
         // Initialize telemetry persistence
         initTelemetryPersistence();
+
+        // Schedule daily telemetry reset
+        try { scheduleTelemetryReset(); } catch (Throwable t) { getLogger().warning("Failed to schedule telemetry reset: " + t.getMessage()); }
 
         // Register PlaceholderAPI expansion (optional)
         if (papiAvailable) {
@@ -169,6 +189,14 @@ public class FirstLogin extends JavaPlugin {
         savePlayers();
         // Persist telemetry for today
         try { saveTelemetryToday(); } catch (Throwable ignored) {}
+        // Cancel telemetry reset task
+        try {
+            if (telemetryResetTaskId != -1) {
+                Bukkit.getScheduler().cancelTask(telemetryResetTaskId);
+                telemetryResetTaskId = -1;
+            }
+        } catch (Throwable ignored) {}
+        telemetryNextResetTs = 0L;
         // Unregister PAPI expansion if present
         if (papiExpansion != null) {
             try { papiExpansion.unregister(); } catch (Throwable ignored) {}
@@ -196,12 +224,15 @@ public class FirstLogin extends JavaPlugin {
         if (saveScheduled) return;
         saveScheduled = true;
         try {
-            scheduledSaveTaskId = Bukkit.getScheduler().runTaskLaterAsynchronously(this, this::doPlayersSaveAsync, 20L).getTaskId(); // ~1s debounce
+            long delay = Math.max(1L, playersSaveDebounceTicks);
+            if (debugSaves) getLogger().info("[debug.saves] Scheduling async players.yml save in " + delay + " ticks");
+            scheduledSaveTaskId = Bukkit.getScheduler().runTaskLaterAsynchronously(this, this::doPlayersSaveAsync, delay).getTaskId();
         } catch (Throwable t) {
             // Fallback: if async scheduling fails, save synchronously
             saveScheduled = false;
             savePlayers();
             playersDirty = false;
+            if (debugSaves) getLogger().info("[debug.saves] Async schedule failed; performed synchronous save immediately");
         }
     }
 
@@ -215,6 +246,7 @@ public class FirstLogin extends JavaPlugin {
                 players.save(playersFile);
             }
             playersDirty = false;
+            if (debugSaves) getLogger().info("[debug.saves] players.yml saved asynchronously");
         } catch (Throwable e) {
             getLogger().warning("Async save of players.yml failed: " + e.getMessage());
         }
@@ -222,7 +254,9 @@ public class FirstLogin extends JavaPlugin {
         if (playersDirty && !saveScheduled) {
             try {
                 saveScheduled = true;
-                scheduledSaveTaskId = Bukkit.getScheduler().runTaskLaterAsynchronously(this, this::doPlayersSaveAsync, 20L).getTaskId();
+                long delay = Math.max(1L, playersSaveDebounceTicks);
+                if (debugSaves) getLogger().info("[debug.saves] Re-scheduling async save in " + delay + " ticks due to new writes during save");
+                scheduledSaveTaskId = Bukkit.getScheduler().runTaskLaterAsynchronously(this, this::doPlayersSaveAsync, delay).getTaskId();
             } catch (Throwable ignored) {}
         }
     }
@@ -242,6 +276,7 @@ public class FirstLogin extends JavaPlugin {
                     players.save(playersFile);
                 }
                 playersDirty = false;
+                if (debugSaves) getLogger().info("[debug.saves] Flushed pending players.yml save synchronously on shutdown/reload");
             }
         } catch (Throwable e) {
             getLogger().warning("Flush save of players.yml failed: " + e.getMessage());
@@ -308,6 +343,13 @@ public class FirstLogin extends JavaPlugin {
         // Telemetry persistence
         config.addDefault("telemetry.persist.enabled", true);
         config.addDefault("telemetry.persist.retentionDays", 14);
+        // Telemetry daily reset scheduling
+        config.addDefault("telemetry.reset.enabled", true);
+        config.addDefault("telemetry.reset.time", "04:00");
+        // Async save debounce + debug
+        config.addDefault("asyncSave.players.debounceTicks", 20);
+        config.addDefault("debug.saves", false);
+        config.addDefault("debug.telemetry", false);
         // bStats metrics defaults
         config.addDefault("metrics.enabled", true);
         config.addDefault("metrics.pluginId", 0);
@@ -436,11 +478,18 @@ public class FirstLogin extends JavaPlugin {
                         reloadConfig();
                         config = getConfig();
                         ensureDefaultConfigValues();
+                        // Reload runtime toggles and reschedule reset
+                        try {
+                            playersSaveDebounceTicks = Math.max(1L, config.getLong("asyncSave.players.debounceTicks", 20L));
+                            debugSaves = config.getBoolean("debug.saves", false);
+                            debugTelemetry = config.getBoolean("debug.telemetry", false);
+                        } catch (Throwable ignored) {}
                         messages = YamlConfiguration.loadConfiguration(messagesFile);
                         // Extract any bundled locale files to data folder
                         extractBundledLocaleFiles();
                         papiAvailable = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
                         localeCache.clear();
+                        try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
                         sendMsg(player, msgFor(player, "messages.reloaded"), player, namesToDate.size());
                         return true;
                     }
@@ -626,6 +675,44 @@ public class FirstLogin extends JavaPlugin {
                                     player.sendMessage(ChatColor.GREEN + "Set " + key + " = " + b);
                                     break;
                                 }
+                                case "telemetry.reset.enabled": {
+                                    boolean b = Boolean.parseBoolean(value);
+                                    config.set("telemetry.reset.enabled", b);
+                                    saveConfig();
+                                    try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
+                                    if (b) {
+                                        String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+                                        long ts = telemetryNextResetTs;
+                                        String when;
+                                        try { when = ts > 0L ? new java.text.SimpleDateFormat(pat).format(new java.util.Date(ts)) : "(unknown)"; }
+                                        catch (Throwable ignored) { when = Long.toString(Math.max(0L, ts)); }
+                                        player.sendMessage(ChatColor.GREEN + "Enabled daily telemetry reset. Next reset: " + ChatColor.YELLOW + when);
+                                    } else {
+                                        player.sendMessage(ChatColor.GREEN + "Disabled daily telemetry reset.");
+                                    }
+                                    break;
+                                }
+                                case "telemetry.reset.time": {
+                                    // Expect HH:mm (24h). Validate before applying.
+                                    java.time.LocalTime t;
+                                    try {
+                                        t = java.time.LocalTime.parse(value);
+                                    } catch (Throwable ex) {
+                                        player.sendMessage(ChatColor.RED + "Invalid time format. Use HH:mm (e.g. 04:00).");
+                                        return true;
+                                    }
+                                    String norm = String.format(java.util.Locale.ROOT, "%02d:%02d", t.getHour(), t.getMinute());
+                                    config.set("telemetry.reset.time", norm);
+                                    saveConfig();
+                                    try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
+                                    String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+                                    long ts = telemetryNextResetTs;
+                                    String when;
+                                    try { when = ts > 0L ? new java.text.SimpleDateFormat(pat).format(new java.util.Date(ts)) : "(disabled)"; }
+                                    catch (Throwable ignored) { when = Long.toString(Math.max(0L, ts)); }
+                                    player.sendMessage(ChatColor.GREEN + "Set telemetry reset time = " + norm + ChatColor.GREEN + ". Next reset: " + ChatColor.YELLOW + when);
+                                    break;
+                                }
                                 case "welcomegui.rulesversion": {
                                     int v = Integer.parseInt(value);
                                     if (v < 1) v = 1;
@@ -644,14 +731,79 @@ public class FirstLogin extends JavaPlugin {
                     }
                     case "metrics": {
                         if (!hasAdminSub(player, "metrics")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (args.length >= 2 && args[1].equalsIgnoreCase("reset")) {
-                            resetMetrics();
-                            player.sendMessage(ChatColor.YELLOW + "Telemetry counters reset for today.");
-                            return true;
+                        if (args.length >= 2) {
+                            if (args[1].equalsIgnoreCase("reset")) {
+                                resetMetrics();
+                                player.sendMessage(ChatColor.YELLOW + "Telemetry counters reset for today.");
+                                return true;
+                            }
+                            if (args[1].equalsIgnoreCase("now")) {
+                                resetMetrics();
+                                try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
+                                player.sendMessage(ChatColor.YELLOW + "Telemetry counters reset and schedule recalculated.");
+                                return true;
+                            }
+                            if (args[1].equalsIgnoreCase("when")) {
+                                String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+                                if (telemetryLastResetTs > 0L) {
+                                    String when;
+                                    try { when = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryLastResetTs)); }
+                                    catch (Throwable ignored) { when = Long.toString(telemetryLastResetTs); }
+                                    long delta = Math.max(0L, System.currentTimeMillis() - telemetryLastResetTs);
+                                    // Build pretty "ago" using simple units
+                                    long secs = delta / 1000L, mins = secs / 60L, hrs = mins / 60L, days = hrs / 24L;
+                                    String ago = days > 0 ? (days + "d ") : "";
+                                    hrs %= 24; mins %= 60; secs %= 60;
+                                    if (hrs > 0) ago += hrs + "h ";
+                                    if (mins > 0) ago += mins + "m ";
+                                    ago += secs + "s ago";
+                                    player.sendMessage(ChatColor.GRAY + "Last reset: " + ChatColor.YELLOW + when + ChatColor.DARK_GRAY + " (" + ago.trim() + ")");
+                                } else {
+                                    player.sendMessage(ChatColor.GRAY + "Last reset: " + ChatColor.YELLOW + "(never)");
+                                }
+                                if (telemetryNextResetTs > 0L) {
+                                    String whenNext;
+                                    try { whenNext = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryNextResetTs)); }
+                                    catch (Throwable ignored) { whenNext = Long.toString(telemetryNextResetTs); }
+                                    long delta = Math.max(0L, telemetryNextResetTs - System.currentTimeMillis());
+                                    long secs = delta / 1000L, mins = secs / 60L, hrs = mins / 60L, days = hrs / 24L;
+                                    String in = days > 0 ? (days + "d ") : "";
+                                    hrs %= 24; mins %= 60; secs %= 60;
+                                    if (hrs > 0) in += hrs + "h ";
+                                    if (mins > 0) in += mins + "m ";
+                                    in += secs + "s";
+                                    player.sendMessage(ChatColor.GRAY + "Next reset: " + ChatColor.YELLOW + whenNext + ChatColor.DARK_GRAY + " (in " + in.trim() + ")");
+                                } else {
+                                    player.sendMessage(ChatColor.GRAY + "Next reset: " + ChatColor.YELLOW + "(disabled)");
+                                }
+                                return true;
+                            }
                         }
                         player.sendMessage(ChatColor.AQUA + "== FirstLogin Telemetry (today) ==");
                         player.sendMessage(ChatColor.GRAY + "GUI opens: " + ChatColor.YELLOW + metricsGuiOpensToday);
                         player.sendMessage(ChatColor.GRAY + "Rules accepted: " + ChatColor.YELLOW + metricsRulesAcceptedToday);
+                        if (!telemetryItemClicksToday.isEmpty()) {
+                            player.sendMessage(ChatColor.GRAY + "Item clicks:");
+                            for (java.util.Map.Entry<String, Integer> e : new java.util.TreeMap<>(telemetryItemClicksToday).entrySet()) {
+                                player.sendMessage(ChatColor.DARK_GRAY + " - " + ChatColor.GRAY + e.getKey() + ": " + ChatColor.YELLOW + e.getValue());
+                            }
+                        }
+                        // Last reset info
+                        if (telemetryLastResetTs > 0L) {
+                            String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+                            String when;
+                            try { when = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryLastResetTs)); }
+                            catch (Throwable ignored) { when = Long.toString(telemetryLastResetTs); }
+                            player.sendMessage(ChatColor.GRAY + "Last reset: " + ChatColor.YELLOW + when);
+                        }
+                        // Next reset info
+                        if (telemetryNextResetTs > 0L) {
+                            String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+                            String whenNext;
+                            try { whenNext = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryNextResetTs)); }
+                            catch (Throwable ignored) { whenNext = Long.toString(telemetryNextResetTs); }
+                            player.sendMessage(ChatColor.GRAY + "Next reset: " + ChatColor.YELLOW + whenNext);
+                        }
                         return true;
                     }
                     case "forceopen": {
@@ -746,12 +898,14 @@ public class FirstLogin extends JavaPlugin {
                             "welcomegui.confirmonaccept",
                             "welcomegui.rulesversion",
                             "debug.gui",
-                            "debug.inventory"
+                            "debug.inventory",
+                            "telemetry.reset.enabled",
+                            "telemetry.reset.time"
                     );
                     return filter.apply(keys, args[1]);
                 }
                 case "metrics": {
-                    return filter.apply(Collections.singletonList("reset"), args[1]);
+                    return filter.apply(Arrays.asList("reset", "when", "now"), args[1]);
                 }
                 default:
                     return Collections.emptyList();
@@ -800,6 +954,12 @@ public class FirstLogin extends JavaPlugin {
                     String key = args[1].toLowerCase(Locale.ROOT);
                     if (key.equals("welcomegui.rulesversion")) {
                         return filter.apply(Arrays.asList("1", "2", "3"), args[2]);
+                    }
+                    if (key.equals("telemetry.reset.enabled")) {
+                        return filter.apply(Arrays.asList("true", "false"), args[2]);
+                    }
+                    if (key.equals("telemetry.reset.time")) {
+                        return filter.apply(Arrays.asList("00:00", "04:00", "12:00", "23:59"), args[2]);
                     }
                     // booleans
                     return filter.apply(Arrays.asList("true", "false"), args[2]);
@@ -854,7 +1014,10 @@ public class FirstLogin extends JavaPlugin {
         metricsRulesAcceptedToday = 0;
         telemetryItemClicksToday.clear();
         metricsDay = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date());
-        try { saveTelemetryToday(); } catch (Throwable ignored) {}
+        try {
+            saveTelemetryToday();
+            markTelemetryReset();
+        } catch (Throwable ignored) {}
     }
 
     // ===== Telemetry persistence (telemetry.yml) =====
@@ -872,6 +1035,8 @@ public class FirstLogin extends JavaPlugin {
         telemetry = YamlConfiguration.loadConfiguration(telemetryFile);
         String today = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date());
         metricsDay = today;
+        // Load last reset timestamp if present
+        try { telemetryLastResetTs = telemetry.getLong("lastReset.ts", 0L); } catch (Throwable ignored) {}
         if (telemetryPersistEnabled) {
             metricsGuiOpensToday = telemetry.getInt("days." + today + ".guiOpens", metricsGuiOpensToday);
             metricsRulesAcceptedToday = telemetry.getInt("days." + today + ".rulesAccepted", metricsRulesAcceptedToday);
@@ -933,6 +1098,72 @@ public class FirstLogin extends JavaPlugin {
             }
             telemetry.save(telemetryFile);
         } catch (IOException ignored) {}
+    }
+
+    // ===== Telemetry reset helpers =====
+    private void scheduleTelemetryReset() {
+        try {
+            telemetryResetEnabled = config.getBoolean("telemetry.reset.enabled", true);
+            telemetryResetTime = config.getString("telemetry.reset.time", "04:00");
+        } catch (Throwable ignored) {}
+        // Cancel any existing
+        try {
+            if (telemetryResetTaskId != -1) {
+                Bukkit.getScheduler().cancelTask(telemetryResetTaskId);
+                telemetryResetTaskId = -1;
+            }
+        } catch (Throwable ignored) {}
+        telemetryNextResetTs = 0L;
+        if (!telemetryResetEnabled) return;
+
+        java.time.LocalTime resetAt;
+        try { resetAt = java.time.LocalTime.parse(telemetryResetTime); }
+        catch (Throwable t) { resetAt = java.time.LocalTime.of(4, 0); }
+
+        java.time.ZoneId zone = java.time.ZoneId.systemDefault();
+        java.time.ZonedDateTime now = java.time.ZonedDateTime.now(zone);
+        java.time.ZonedDateTime todayReset = now.withHour(resetAt.getHour()).withMinute(resetAt.getMinute()).withSecond(0).withNano(0);
+        // Determine if we should reset immediately (server started after today's reset time and we haven't reset today)
+        boolean didResetToday = false;
+        try {
+            if (telemetryLastResetTs > 0) {
+                java.time.LocalDate last = java.time.Instant.ofEpochMilli(telemetryLastResetTs).atZone(zone).toLocalDate();
+                didResetToday = last.equals(now.toLocalDate());
+            }
+        } catch (Throwable ignored) {}
+
+        if (!didResetToday && !now.isBefore(todayReset)) {
+            if (debugTelemetry) getLogger().info("[debug.telemetry] Performing immediate telemetry reset (missed scheduled time)");
+            try { performTelemetryReset(); } catch (Throwable ignored) {}
+            // After immediate reset, schedule next for tomorrow
+            now = java.time.ZonedDateTime.now(zone);
+            todayReset = now.plusDays(1).withHour(resetAt.getHour()).withMinute(resetAt.getMinute()).withSecond(0).withNano(0);
+        } else if (now.isAfter(todayReset)) {
+            todayReset = todayReset.plusDays(1);
+        }
+
+        long delayTicks = Math.max(1L, java.time.Duration.between(now, todayReset).getSeconds() * 20L);
+        telemetryNextResetTs = todayReset.toInstant().toEpochMilli();
+        if (debugTelemetry) getLogger().info("[debug.telemetry] Scheduling telemetry reset in " + delayTicks + " ticks at " + todayReset);
+        telemetryResetTaskId = Bukkit.getScheduler().runTaskLater(this, () -> {
+            try { performTelemetryReset(); } catch (Throwable ignored) {}
+            // Chain next schedule
+            try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
+        }, delayTicks).getTaskId();
+    }
+
+    private void performTelemetryReset() {
+        resetMetrics();
+        if (debugTelemetry) getLogger().info("[debug.telemetry] Telemetry counters reset and persisted.");
+    }
+
+    private void markTelemetryReset() {
+        telemetryLastResetTs = System.currentTimeMillis();
+        if (telemetry == null) return;
+        String date = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date(telemetryLastResetTs));
+        telemetry.set("lastReset.ts", telemetryLastResetTs);
+        telemetry.set("lastReset.date", date);
+        try { telemetry.save(telemetryFile); } catch (IOException ignored) {}
     }
 
     // ===== Helpers and stubs to complete build =====
@@ -1032,6 +1263,12 @@ public class FirstLogin extends JavaPlugin {
     public int getGuiOpensToday() { return metricsGuiOpensToday; }
     public int getRulesAcceptedToday() { return metricsRulesAcceptedToday; }
     public int getItemClicksToday(String key) { return telemetryItemClicksToday.getOrDefault(key, 0); }
+
+    // Public accessor for last telemetry reset timestamp (epoch millis), 0 if never
+    public long getTelemetryLastResetTs() { return telemetryLastResetTs; }
+
+    // Public accessor for next scheduled telemetry reset timestamp (epoch millis), 0 if disabled/unknown
+    public long getTelemetryNextResetTs() { return telemetryNextResetTs; }
 
     // Compute 1-based join order number based on firstPlayed timestamps across known players
     public int joinNumberOf(org.bukkit.OfflinePlayer target) {

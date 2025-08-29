@@ -3,7 +3,7 @@
 A lightweight, friendly first-join experience plugin for Spigot/Paper. Shows custom messages for first-time players, optional visuals (title/action bar/sound), and simple server stats. Now with Adventure MiniMessage support and seamless legacy color fallback.
 
 Author: BooPug Studios
-Version: 1.7.2
+Version: 1.7.3-SNAPSHOT
 MC: 1.20+ (Java 17)
 
 ## Features
@@ -29,7 +29,7 @@ MC: 1.20+ (Java 17)
  - Asynchronous player data saving (non-blocking players.yml writes)
 
 ## Installation
-1. Place `target/firstlogin-1.7.2.jar` into your server `plugins/` folder.
+1. Place `target/firstlogin-1.7.3-SNAPSHOT.jar` into your server `plugins/` folder.
 2. Start the server once to generate configs:
    - `plugins/FirstLogIn/config.yml`
    - `plugins/FirstLogIn/messages.yml`
@@ -50,7 +50,7 @@ MC: 1.20+ (Java 17)
   - `clearflag <player> <flag|all>`
   - `seen <player>` / `reset <player|all>` / `status [player]`
   - `set <key> <value>` – runtime toggles (see keys below)
-  - `metrics [reset]` – show or reset today’s telemetry counters
+  - `metrics [reset|when|now]` – view telemetry (last/next reset, pretty durations), reset today, or reset immediately
 
 ## Permissions
 - `firstlogin.admin` – use `/firstlogin` admin commands (default: op)
@@ -99,6 +99,25 @@ New in 1.7.2:
 
 Note: date formatting defaults to `yyyy-MM-dd HH:mm:ss` and can be customized via `formatting.datePattern`.
 
+### New in 1.7.3 (Unreleased)
+- `%firstlogin_metrics_reset_date%` – formatted date/time of the last telemetry reset
+- `%firstlogin_metrics_last_reset_ts%` – epoch millis of the last telemetry reset (0 if never)
+- `%firstlogin_metrics_next_reset_date%` – formatted date/time of the next scheduled telemetry reset
+- `%firstlogin_metrics_next_reset_ts%` – epoch millis of the next scheduled telemetry reset (0 if disabled)
+- Daily telemetry reset scheduling with persistence of last reset timestamp
+  - Config: `telemetry.reset.enabled` and `telemetry.reset.time` (HH:mm)
+- Configurable async save debounce for `players.yml`
+  - `asyncSave.players.debounceTicks`
+- Additional debug toggles
+  - `debug.saves` and `debug.telemetry`
+
+- New telemetry reset timing placeholders:
+  - `%firstlogin_metrics_next_reset_in_seconds%`
+  - `%firstlogin_metrics_next_reset_in_minutes%`
+  - `%firstlogin_metrics_next_reset_in_hours%`
+  - `%firstlogin_metrics_next_reset_pretty%` (e.g., "3h 14m 5s")
+  - `%firstlogin_metrics_last_reset_pretty%` (e.g., "1d 2h 3m 4s ago")
+
 Examples:
 
 ```
@@ -106,10 +125,17 @@ Examples:
 /papi parse me %firstlogin_online%/%firstlogin_total%
 /papi parse me %firstlogin_owner%
 /papi parse me %firstlogin_rules_accepted%
-// New examples
 /papi parse me %firstlogin_gui_opens_today%
 /papi parse me %firstlogin_item_clicks_today_confirm_accept%
 /papi parse me %firstlogin_join_order%
+/papi parse me %firstlogin_metrics_reset_date%
+/papi parse me %firstlogin_metrics_next_reset_date%
+/papi parse me %firstlogin_metrics_last_reset_ts%
+/papi parse me %firstlogin_metrics_next_reset_ts%
+/papi parse me %firstlogin_metrics_next_reset_in_minutes%
+/papi parse me %firstlogin_metrics_next_reset_in_hours%
+/papi parse me %firstlogin_metrics_next_reset_pretty%
+/papi parse me %firstlogin_metrics_last_reset_pretty%
 ```
 
 ## Configuration highlights
@@ -128,9 +154,13 @@ Examples:
   - `reopenOnJoinUntilAccepted` – open GUI on every join until rules are accepted
   - Per-item keys: `permission`, `hideIfNoPermission`, `requires` (supports `perm:<node>` and `flag:<flag>`), `closeOnClick`, `once`, `cooldownSeconds`, `clickSound`
 - Metrics under `metrics.enabled` and `metrics.pluginId`
+- Async saving under `asyncSave.players.debounceTicks` (debounce ticks for players.yml async save)
 - Debug logging under `debug:`
   - `debug.gui` – log GUI flow and actions
   - `debug.inventory` – log inventory event cancellations
+  - `debug.saves` – log async players.yml save scheduling/execution
+  - `debug.telemetry` – log telemetry reset scheduling/execution
+- Telemetry reset under `telemetry.reset.enabled` and `telemetry.reset.time` (daily reset time HH:mm)
 
 ### Runtime toggles via `/firstlogin set`
 Supported keys (case-insensitive):
@@ -140,6 +170,8 @@ Supported keys (case-insensitive):
 - `welcomeGui.rulesVersion` – integer (>= 1)
 - `debug.gui` – true|false
 - `debug.inventory` – true|false
+- `telemetry.reset.enabled` – true|false (reschedules immediately)
+- `telemetry.reset.time` – time in HH:mm (server local time; reschedules immediately)
 
 Example:
 ```
@@ -204,7 +236,9 @@ Commands and URLs in GUI actions fully resolve MiniMessage and PlaceholderAPI pl
 
 ## Telemetry (in-plugin)
 - Daily counters: GUI opens and rules accepted.
-- View with `/firstlogin metrics`; reset using `/firstlogin metrics reset`.
+- View with `/firstlogin metrics`; shows last and next reset times.
+- Use `/firstlogin metrics when` for nicely formatted "ago"/"in" durations.
+- Reset using `/firstlogin metrics reset`, or force an immediate reset with `/firstlogin metrics now`.
 
 ## Changelog
 See `CHANGELOG.md` for full details of 1.7.2.

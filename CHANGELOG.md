@@ -1,5 +1,36 @@
 # FirstLogin – Changelog
 
+## 1.7.3 (Unreleased)
+
+- Add: Daily telemetry reset scheduling with persistence of last reset timestamp
+  - Config: `telemetry.reset.enabled` (bool), `telemetry.reset.time` (HH:mm server local time)
+  - Persists last reset under `telemetry.yml` as both epoch millis and formatted date
+  - `/firstlogin metrics` now shows the last reset date
+- Add: New PlaceholderAPI placeholder `%firstlogin_metrics_reset_date%` (formatted by `formatting.datePattern`)
+- Add: Configurable debounce for async players.yml saving and debug logs
+  - Config: `asyncSave.players.debounceTicks` (ticks)
+  - Debug toggles: `debug.saves` and `debug.telemetry`
+
+- Add: Track and expose next scheduled telemetry reset time
+  - `/firstlogin metrics` now shows the next reset time
+  - New PAPI placeholders:
+    - `%firstlogin_metrics_last_reset_ts%` – epoch millis of last telemetry reset (0 if never)
+    - `%firstlogin_metrics_next_reset_date%` – formatted next scheduled telemetry reset time
+    - `%firstlogin_metrics_next_reset_ts%` – epoch millis of next scheduled telemetry reset (0 if disabled)
+    - `%firstlogin_metrics_next_reset_in_seconds%`
+    - `%firstlogin_metrics_next_reset_in_minutes%`
+    - `%firstlogin_metrics_next_reset_in_hours%`
+    - `%firstlogin_metrics_next_reset_pretty%`
+    - `%firstlogin_metrics_last_reset_pretty%`
+
+- Add: Runtime telemetry reset toggles via `/firstlogin set`
+  - Keys: `telemetry.reset.enabled` (bool), `telemetry.reset.time` (HH:mm)
+  - Changes persist immediately and reschedule the next reset right away
+- Add: New `/firstlogin metrics` subcommands for convenience
+  - `when` – shows last and next reset with pretty "ago"/"in" durations
+  - `now` – forces an immediate telemetry reset and recalculates schedule
+- Update: Tab completion includes new `set` keys and `metrics` subcommands
+
 ## 1.7.2 (2025‑08‑24)
 
 - Add: Optional confirmation dialog before accepting rules in the Welcome GUI (`welcomeGui.confirmOnAccept`)

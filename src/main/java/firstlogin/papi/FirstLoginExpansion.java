@@ -32,12 +32,40 @@ import org.jetbrains.annotations.Nullable;
  * - %firstlogin_item_clicks_today_<key>% -> number of clicks today for GUI item '<key>'
  * - %firstlogin_join_number%     -> 1-based join order across known players
  * - %firstlogin_join_order%      -> alias of join_number
+ * - %firstlogin_metrics_reset_date% -> formatted date/time of last telemetry reset
+ * - %firstlogin_metrics_last_reset_ts% -> raw epoch millis of last telemetry reset (0 if never)
+ * - %firstlogin_metrics_next_reset_date% -> formatted date/time of next scheduled telemetry reset (empty if disabled)
+ * - %firstlogin_metrics_next_reset_ts% -> raw epoch millis of next scheduled telemetry reset (0 if disabled)
+ * - %firstlogin_metrics_next_reset_in_seconds% -> seconds until next reset (0 if disabled)
+ * - %firstlogin_metrics_next_reset_in_minutes% -> minutes until next reset (0 if disabled)
+ * - %firstlogin_metrics_next_reset_in_hours% -> hours until next reset (0 if disabled)
+ * - %firstlogin_metrics_next_reset_pretty% -> pretty duration until next reset (empty if disabled)
+ * - %firstlogin_metrics_last_reset_pretty% -> pretty time since last reset (empty if unknown)
  */
 public class FirstLoginExpansion extends PlaceholderExpansion {
     private final FirstLogin plugin;
 
     public FirstLoginExpansion(FirstLogin plugin) {
         this.plugin = plugin;
+    }
+
+    // Format a duration in millis as a compact pretty string like "1d 2h 3m 4s"
+    private static String formatDurationPretty(long millis) {
+        if (millis <= 0L) return "";
+        long totalSeconds = millis / 1000L;
+        long days = totalSeconds / 86400L;
+        long hours = (totalSeconds % 86400L) / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        StringBuilder sb = new StringBuilder();
+        if (days > 0) sb.append(days).append('d').append(' ');
+        if (hours > 0) sb.append(hours).append('h').append(' ');
+        if (minutes > 0) sb.append(minutes).append('m').append(' ');
+        if (seconds > 0 || sb.length() == 0) sb.append(seconds).append('s');
+        // Trim trailing space if present
+        int len = sb.length();
+        if (len > 0 && sb.charAt(len - 1) == ' ') sb.setLength(len - 1);
+        return sb.toString();
     }
 
     @Override
@@ -194,6 +222,67 @@ public class FirstLoginExpansion extends PlaceholderExpansion {
                     }
                 }
                 return Integer.toString(max);
+            }
+            case "metrics_reset_date": {
+                long ts = plugin.getTelemetryLastResetTs();
+                if (ts <= 0L) return "";
+                String pat = FirstLogin.config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+                try {
+                    return new java.text.SimpleDateFormat(pat).format(new java.util.Date(ts));
+                } catch (Throwable ignored) {
+                    return Long.toString(ts);
+                }
+            }
+            case "metrics_last_reset_ts": {
+                long ts = plugin.getTelemetryLastResetTs();
+                return Long.toString(Math.max(0L, ts));
+            }
+            case "metrics_next_reset_date": {
+                long ts = plugin.getTelemetryNextResetTs();
+                if (ts <= 0L) return "";
+                String pat = FirstLogin.config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+                try {
+                    return new java.text.SimpleDateFormat(pat).format(new java.util.Date(ts));
+                } catch (Throwable ignored) {
+                    return Long.toString(ts);
+                }
+            }
+            case "metrics_next_reset_ts": {
+                long ts = plugin.getTelemetryNextResetTs();
+                return Long.toString(Math.max(0L, ts));
+            }
+            case "metrics_next_reset_in_seconds": {
+                long ts = plugin.getTelemetryNextResetTs();
+                long now = System.currentTimeMillis();
+                long delta = Math.max(0L, ts - now);
+                return Long.toString(delta / 1000L);
+            }
+            case "metrics_next_reset_in_minutes": {
+                long ts = plugin.getTelemetryNextResetTs();
+                long now = System.currentTimeMillis();
+                long delta = Math.max(0L, ts - now);
+                return Long.toString(delta / (1000L * 60L));
+            }
+            case "metrics_next_reset_in_hours": {
+                long ts = plugin.getTelemetryNextResetTs();
+                long now = System.currentTimeMillis();
+                long delta = Math.max(0L, ts - now);
+                return Long.toString(delta / (1000L * 60L * 60L));
+            }
+            case "metrics_next_reset_pretty": {
+                long ts = plugin.getTelemetryNextResetTs();
+                long now = System.currentTimeMillis();
+                long delta = Math.max(0L, ts - now);
+                if (ts <= 0L || delta <= 0L) return "";
+                return formatDurationPretty(delta);
+            }
+            case "metrics_last_reset_pretty": {
+                long ts = plugin.getTelemetryLastResetTs();
+                if (ts <= 0L) return "";
+                long now = System.currentTimeMillis();
+                long delta = Math.max(0L, now - ts);
+                String pretty = formatDurationPretty(delta);
+                return pretty.isEmpty() ? "" : (pretty + " ago");
             }
             default:
                 return null; // unknown

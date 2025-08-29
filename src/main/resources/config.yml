@@ -157,6 +157,28 @@ welcomeGui:
         volume: 1.0
         pitch: 1.2
 
+# Asynchronous saving for players.yml
+# Changes to players.yml are batched and saved asynchronously with a debounce delay
+# to avoid frequent disk writes on the main thread.
+asyncSave:
+  players:
+    # Debounce delay in ticks before performing an async save after changes occur
+    debounceTicks: 20
+
+# Debug logging toggles
+debug:
+  # Log scheduling and completion of players.yml async saves
+  saves: false
+  # Log telemetry reset scheduling and execution
+  telemetry: false
+
+# Telemetry reset schedule
+telemetry:
+  reset:
+    enabled: true
+    # Time of day (server local time) to reset daily telemetry counters, format HH:mm
+    time: "04:00"
+
 # Metrics (bStats)
 metrics:
   enabled: true
