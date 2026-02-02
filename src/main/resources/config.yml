@@ -1,8 +1,34 @@
-# Made by BooPug Studios
-# For GlobalMessage the player name will be displayed before the message, ex <player>: message.
-# This plugin is still in its beta phase and will be updated shortly.
-# Set the World name property to your current world's name:
-# Set the World owner property to your name:
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║                         FirstLogin Configuration                           ║
+# ║                           Made by BooPug Studios                           ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+#
+# Full documentation: https://github.com/yourrepo/firstlogin/wiki
+#
+# Quick Reference - Action Types:
+#   message:<path>  command:<cmd>  url:<url>  sound:<name>  give:<item>:<amt>
+#   teleport:<world>:<x>:<y>:<z>  effect:<type>:<sec>  title:<text>|<sub>
+#   flag:set:<name>  flag:clear:<name>  page:<num>  close  acceptRules  back
+#   heal:full  feed:full  xp:<amt>  gamemode:<mode>  fly:on/off  broadcast:<msg>
+#   firework:<color>:<type>:<power>  particle:<type>:<count>  bossbar:<text>:<color>:<sec>
+#   velocity:up:<power>  cleareffects  sudo:<cmd>  op:<cmd>
+#   random:<a>|<b>  delay:<ticks>:<action>  if:<req>:<then>:<else>  chance:<pct>:<action>
+#
+# Quick Reference - Requirement Types:
+#   flag:<name>  !flag:<name>  perm:<node>  !perm:<node>  level:>=10  health:>=10
+#   food:>=10  gamemode:SURVIVAL  world:<name>  online:>=10  time:day  weather:clear
+#   cooldown:<key>:<sec>  played:>=3600
+#
+# Quick Reference - Item Options:
+#   slot  page  material  amount  name  lore  glow  customModelData  skullOwner  color
+#   hideAttributes  hideFlags  permission  hideIfNoPermission  disabledVariant
+#   enchantments: ["sharpness:5", "unbreaking:3"]  potionColor  potionEffects
+#
+# Quick Reference - Placeholders (use in name, lore, messages):
+#   {player}  {online}  {total}  {owner}  {health}  {max_health}  {food}  {level}  {xp}
+#   {world}  {x}  {y}  {z}  {gamemode}  {time}  {weather}  {playtime}  {ping}  {uuid_short}
+#   {bar_health}  {bar_food}  {bar_xp}  - Visual progress bars (10 chars)
+#   {progress:current:max:width:filledColor:emptyColor} - Custom progress bar
 
 World:
   name: world
@@ -62,12 +88,51 @@ welcomeGui:
   openDelayTicks: 40
   # When the GUI is forcibly reopened after closing without accepting, wait this many ticks
   reopenDelayTicks: 1
+  # Reopen GUI on every join until rules are accepted
+  reopenOnJoinUntilAccepted: false
   # Prevent closing until rules are accepted
   blockCloseUntilAccepted: true
+  # Allow players with firstlogin.bypass.rules permission to bypass forced reopen
+  bypassClosePermission: true
   # Bump when rules change to force re-acceptance: flags will be stored as rules_v<version>
   rulesVersion: 1
   # Show a confirm dialog when attempting to accept rules from the main GUI
   confirmOnAccept: false
+  # Sounds played during GUI interactions
+  sounds:
+    open:
+      enabled: false
+      name: "BLOCK_CHEST_OPEN"
+      volume: 0.5
+      pitch: 1.2
+    close:
+      enabled: false
+      name: "BLOCK_CHEST_CLOSE"
+      volume: 0.5
+      pitch: 1.2
+    rulesAccepted:
+      enabled: true
+      name: "ENTITY_PLAYER_LEVELUP"
+      volume: 1.0
+      pitch: 1.0
+  # Sound played when an action is denied (missing permission, requirements not met, etc.)
+  denySound:
+    name: "ENTITY_VILLAGER_NO"
+    volume: 1.0
+    pitch: 1.2
+  # Filler for empty slots (optional)
+  filler:
+    enabled: false
+    material: "GRAY_STAINED_GLASS_PANE"
+    name: "&r"
+    lore: []
+  # Pagination controls for multi-page GUIs
+  pagination:
+    enabled: false
+    # Slot for "Previous" arrow (default: bottom-left area)
+    prevSlot: 18
+    # Slot for "Next" arrow (default: bottom-right area)
+    nextSlot: 26
   # Optional commands to run when rules are accepted (from console)
   onRulesAccepted:
     commands: [] # e.g. ["say {player} accepted the rules"]
@@ -103,59 +168,54 @@ welcomeGui:
         volume: 1.0
         pitch: 1.0
   items:
+    # View rules button
     rules:
       slot: 11
       material: PAPER
       name: "&eView &6Rules"
-      lore:
-        - "&7Click to read the rules."
+      lore: ["&7Click to read the rules."]
       action: "message:messages.rules"
-      closeOnClick: false
-      clickSound:
-        name: UI_BUTTON_CLICK
-        volume: 1.0
-        pitch: 1.2
+
+    # Accept rules button
     accept_rules:
       slot: 12
       material: LIME_DYE
       name: "&aAccept Rules"
-      lore:
-        - "&7Click to accept the rules."
-      action: "flag:set:rules"
-      closeOnClick: false
-      clickSound:
-        name: UI_TOAST_CHALLENGE_COMPLETE
-        volume: 0.8
-        pitch: 1.0
+      lore: ["&7Click to accept the rules."]
+      action: "acceptRules"
+      clickSound: { name: UI_TOAST_CHALLENGE_COMPLETE, volume: 0.8, pitch: 1.0 }
+    # Discord link button
     discord:
       slot: 14
       material: AMETHYST_SHARD
       name: "&bJoin our Discord"
-      lore:
-        - "&7Click to get the link."
+      lore: ["&7Click to get the link."]
       action: "url:https://discord.gg/yourinvite"
+      urlLabel: "&bClick here to join Discord"
       closeOnClick: true
-      clickSound:
-        name: UI_BUTTON_CLICK
-        volume: 1.0
-        pitch: 1.0
+
+    # Starter kit with requirement
     starter_kit:
       slot: 15
       material: CHEST
       name: "&6Claim Starter Kit"
-      lore:
-        - "&7Receive some basic items."
-        - "&8Requires: Rules accepted"
+      lore: ["&7Receive some basic items.", "&8Requires: Rules accepted"]
       requires: "flag:rules"
       action: "command:give {player} bread 8"
-      # Allow only once or set a cooldown
       once: true
-      cooldownSeconds: 0
       closeOnClick: true
-      clickSound:
-        name: ENTITY_PLAYER_LEVELUP
-        volume: 1.0
-        pitch: 1.2
+      clickSound: { name: ENTITY_PLAYER_LEVELUP, volume: 1.0, pitch: 1.2 }
+
+    # Admin-only item (hidden if no permission)
+    admin_panel:
+      slot: 16
+      material: COMMAND_BLOCK
+      name: "&cAdmin Panel"
+      lore: ["&7Staff only feature."]
+      permission: "firstlogin.admin"
+      hideIfNoPermission: true
+      action: "command:firstlogin help"
+      closeOnClick: true
 
 # Asynchronous saving for players.yml
 # Changes to players.yml are batched and saved asynchronously with a debounce delay
@@ -183,3 +243,92 @@ telemetry:
 metrics:
   enabled: true
   pluginId: 27008 # Replace with your bStats plugin ID when available
+
+# ===== ADVANCED FEATURES =====
+# These features are experimental and disabled by default.
+
+# Join-message coordination (to avoid multi-plugin welcome spam)
+# Useful when multiple plugins send welcome messages
+coordination:
+  enabled: true
+  # Role determines priority: primary (takes precedence), secondary (yields), exclusive (blocks others)
+  role: "secondary"
+  # Ticks to wait for coordination claim
+  waitTicks: 40
+  # Metadata key used for coordination
+  key: "firstlogin:welcome_claim"
+
+# BossBar welcome message (shown on first join)
+bossbar:
+  enabled: false
+  text: "<gradient:#ffd54f:#ff9100><bold>Welcome, {player}!</bold></gradient>"
+  color: "PURPLE"  # PINK, BLUE, RED, GREEN, YELLOW, PURPLE, WHITE
+  overlay: "PROGRESS"  # PROGRESS, NOTCHED_6, NOTCHED_10, NOTCHED_12, NOTCHED_20
+  durationSeconds: 8
+
+# Action bar welcome message (repeating, shown on first join)
+actionbar:
+  enabled: false
+  text: "<yellow>Welcome to the server, {player}!"
+  durationSeconds: 5
+  refreshTicks: 20
+
+# Particle effects on first join (experimental)
+particles:
+  enabled: false
+  effectType: "welcome_burst"  # Type of particle effect
+  duration: 60  # Duration in ticks
+  radius: 2.0
+  particleCount: 50
+  colors:
+    primary:
+      red: 255
+      green: 255
+      blue: 0
+    secondary:
+      red: 0
+      green: 255
+      blue: 255
+
+# Animated NPC guide (experimental, requires Citizens or similar)
+animatedGuide:
+  enabled: false
+  name: "&6Welcome Guide"
+  duration: 120  # Duration in ticks before despawn
+  spawnLocation:
+    world: "world"
+    x: 0.0
+    y: 100.0
+    z: 0.0
+    yaw: 0.0
+    pitch: 0.0
+
+# ===== JOIN TRACKING & EVENTS =====
+
+# Login streak tracking
+streaks:
+  # Show message when player reaches streak milestones (7, 14, 30, 60, 90, 100, 365 days)
+  milestoneMessage: true
+  message: "&a🔥 {player} has a {streak} day login streak!"
+
+# Anniversary celebrations
+anniversary:
+  enabled: true
+  message: "&6🎂 Happy {years} year anniversary, {player}!"
+  broadcast: true
+  broadcastMessage: "&6🎂 {player} is celebrating their {years} year anniversary on the server!"
+
+# Discord/Slack webhook notifications
+webhook:
+  enabled: false
+  url: ""  # Your Discord/Slack webhook URL
+  username: "FirstLogin"
+  avatarUrl: ""
+  firstJoin:
+    title: "🎉 New Player!"
+    description: "{player} joined for the first time! (Player #{number})"
+    color: "65280"  # Green (decimal color)
+  returning:
+    title: "👋 Player Returned"
+    description: "{player} is back! Streak: {streak} days"
+    color: "3447003"  # Blue (decimal color)

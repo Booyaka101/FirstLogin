@@ -1,6 +1,6 @@
 name: FirstLogIn
 main: firstlogin.FirstLogin
-version: 1.7.3-SNAPSHOT
+version: 1.8.0-SNAPSHOT
 api-version: '1.20'
 author: BooPug Studios
 description: First login messages and stats (updated for 1.20.1+)
@@ -27,7 +27,7 @@ commands:
     usage: /firsthelp
   firstlogin:
     description: Admin commands for FirstLogin
-    usage: '/firstlogin <locale <tag|reset>|reload|seen <player>|status [player]|reset <player|all>|gui <open [player]|accept [player]|trigger <key> [player]>|clearcooldown <player> <key|all>|clearflag <player> <flag|all>|set <key> <value>|metrics [reset]>'
+    usage: '/firstlogin <locale <tag|reset>|reload|seen <player>|status [player]|reset <player|all>|gui <open [player]|accept [player]|trigger <key> [player]|additem <key> [slot] [material]|set <key> <path> <value>|move <key> <slot>|remove <key>|list|clone <src> <dst>|swap <a> <b>|undo|fill <material> [name] [lore]|normalize|validate [actions|layout|pages|all]|preview <key> [player]|export <key>|jsonexport <key>|import <file.yml> [key] [dry] [overwrite]|fixduplicates [verbose]|massset <path> <value> [filter=<prefix>] [page=<n>] [dry|confirm]|rename <oldKey> <newKey>|movepage <from> <to>|clearpage <n> confirm>|clearcooldown <player> <key|all>|clearflag <player> <flag|all>|set <key> <value>|metrics [reset|when|now]|report pending [page]|report pending csv [online|offline|all]>'
     aliases: [fl, flogin]
 permissions:
   firstlogin.admin:
@@ -43,6 +43,7 @@ permissions:
       firstlogin.admin.status: true
       firstlogin.admin.set: true
       firstlogin.admin.metrics: true
+      firstlogin.admin.report: true
   firstlogin.admin.reload:
     description: Allows use of /firstlogin reload
     default: op
@@ -70,6 +71,12 @@ permissions:
   firstlogin.admin.metrics:
     description: Allows use of /firstlogin metrics [reset]
     default: op
+  firstlogin.admin.report:
+    description: Allows use of /firstlogin report pending [page]
+    default: op
+  firstlogin.admin.forceopen:
+    description: Allows use of /firstlogin forceopen to reopen GUI for players who haven't accepted rules
+    default: op
   firstlogin.command.listp:
     description: Allows use of /listp
     default: op
@@ -87,4 +94,10 @@ permissions:
     default: true
   firstlogin.bypass.rules:
     description: Allows bypassing forced Welcome GUI reopen on close when rules not yet accepted
+    default: false
+  firstlogin.gui.open:
+    description: Allows use of /welcome to open the Welcome GUI
+    default: true
+  firstlogin.autoaccept:
+    description: Automatically accepts rules on join without showing GUI
     default: false

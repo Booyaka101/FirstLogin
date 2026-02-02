@@ -6,28 +6,27 @@ import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import firstlogin.gui.WelcomeGui;
 import firstlogin.event.RulesAcceptedEvent;
-import me.clip.placeholderapi.PlaceholderAPI;
 import org.bstats.bukkit.Metrics;
 import org.bstats.charts.AdvancedPie;
 import org.bstats.charts.SingleLineChart;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerJoinEvent;
+import firstlogin.listeners.JoinListener;
+import firstlogin.services.CoordinationService;
+import firstlogin.services.TelemetryService;
+import firstlogin.services.PlayersStore;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.NamespacedKey;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,7 +38,6 @@ public class FirstLogin extends JavaPlugin {
     private final Logger log = Logger.getLogger("Minecraft");
     private File messagesFile;
     private YamlConfiguration messages;
-    private final Map<String, YamlConfiguration> localeCache = new HashMap<>();
 
     // Adventure / MiniMessage
     private BukkitAudiences adventure;
@@ -47,29 +45,45 @@ public class FirstLogin extends JavaPlugin {
 
     // PlaceholderAPI availability
     private boolean papiAvailable;
+
+    // Coordination to avoid multi-plugin welcome spam (encapsulated in service)
+    // Extracted service wrapper
+    private CoordinationService coordinationService;
+    // Facades for modularization
+    private TelemetryService telemetryService;
+    private PlayersStore playersStore;
     // PlaceholderAPI expansion instance (if registered)
     private firstlogin.papi.FirstLoginExpansion papiExpansion;
 
     // Welcome GUI
     WelcomeGui welcomeGui;
 
-    // Simple in-memory metrics (per JVM day)
-    private int metricsGuiOpensToday = 0;
-    private int metricsRulesAcceptedToday = 0;
-    private String metricsDay = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date());
-    private final java.util.Map<String, Integer> telemetryItemClicksToday = new java.util.HashMap<>();
+    // Particle effects for amazing first joins
+    private ParticleManager particleManager;
 
-    // Telemetry persistence
-    private File telemetryFile;
-    private YamlConfiguration telemetry;
-    private boolean telemetryPersistEnabled;
-    private int telemetryRetentionDays;
+    // Animated NPC guides for new players
+    private AnimatedGuideManager guideManager;
+
+    // BossBar welcome (optional)
+    private BossBarWelcomeManager bossBarManager;
+
+    // Action bar welcome (optional)
+    private ActionBarManager actionBarManager;
+
+    // Telemetry fully handled by TelemetryService
 
     // Cached count of players to-date to avoid repeated filesystem scans on main thread
     private volatile int cachedPlayersToDate = -1;
     private volatile long cachedPlayersToDateAt = 0L;
     private static final long PLAYERS_TO_DATE_TTL_MS = 30_000L; // 30s
     private volatile boolean computingPlayersToDate = false;
+
+    // Cached rules counts to avoid expensive iteration on every call
+    private volatile int cachedRulesAcceptedCount = -1;
+    private volatile int cachedRulesPendingCount = -1;
+    private volatile long cachedRulesCountsAt = 0L;
+    private static final long RULES_COUNTS_TTL_MS = 60_000L; // 60s
+    private volatile boolean computingRulesCounts = false;
 
     // ===== Asynchronous players.yml save queue =====
     private final Object playersSaveLock = new Object();
@@ -80,13 +94,7 @@ public class FirstLogin extends JavaPlugin {
     private long playersSaveDebounceTicks = 20L; // default ~1s
     private boolean debugSaves = false;
 
-    // ===== Telemetry daily reset scheduling =====
-    private boolean telemetryResetEnabled = true;
-    private String telemetryResetTime = "04:00"; // HH:mm server local time
-    private int telemetryResetTaskId = -1;
-    private long telemetryLastResetTs = 0L; // epoch millis of last reset
-    private long telemetryNextResetTs = 0L; // epoch millis of next scheduled reset (0 if disabled/unknown)
-    private boolean debugTelemetry = false;
+    // (legacy telemetry fields removed)
 
     @Override
     public void onEnable() {
@@ -94,12 +102,15 @@ public class FirstLogin extends JavaPlugin {
         saveDefaultConfig();
         config = getConfig();
         ensureDefaultConfigValues();
+        // Validate configuration and warn about issues
+        validateConfig();
         // Load runtime toggles
         try {
             playersSaveDebounceTicks = Math.max(1L, config.getLong("asyncSave.players.debounceTicks", 20L));
             debugSaves = config.getBoolean("debug.saves", false);
-            debugTelemetry = config.getBoolean("debug.telemetry", false);
         } catch (Throwable ignored) {}
+        // Load coordination settings
+        try { loadCoordinationConfig(); } catch (Throwable ignored) {}
 
         // players.yml in plugin data folder
         if (!getDataFolder().exists()) {
@@ -132,31 +143,73 @@ public class FirstLogin extends JavaPlugin {
         adventure = BukkitAudiences.create(this);
         mm = MiniMessage.miniMessage();
 
-        // PlaceholderAPI detection
-        papiAvailable = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
+        // PlaceholderAPI detection + config toggle
+        boolean papiPresent = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
+        boolean papiToggle = true;
+        try { papiToggle = config.getBoolean("placeholderapi.enabled", true); } catch (Throwable ignored) {}
+        papiAvailable = papiPresent && papiToggle;
 
-        // Initialize telemetry persistence
-        initTelemetryPersistence();
+        // Initialize service facades (delegating to existing logic for now)
+        try { telemetryService = new TelemetryService(this); } catch (Throwable ignored) { telemetryService = null; }
+        try { playersStore = new PlayersStore(this); } catch (Throwable ignored) { playersStore = null; }
 
-        // Schedule daily telemetry reset
-        try { scheduleTelemetryReset(); } catch (Throwable t) { getLogger().warning("Failed to schedule telemetry reset: " + t.getMessage()); }
+        // Initialize telemetry via service
+        if (telemetryService != null) {
+            try { telemetryService.initPersistenceAndScheduling(); } catch (Throwable t) {
+                getLogger().warning("Telemetry initialization via service failed: " + t.getMessage());
+            }
+        } else {
+            getLogger().warning("TelemetryService not available; telemetry disabled");
+        }
 
         // Register PlaceholderAPI expansion (optional)
         if (papiAvailable) {
             try {
                 papiExpansion = new firstlogin.papi.FirstLoginExpansion(this);
+                // Explicitly register with PAPI so placeholders become available
                 papiExpansion.register();
+                getLogger().info("PlaceholderAPI expansion registered");
             } catch (Throwable t) {
                 getLogger().warning("Could not register PlaceholderAPI expansion: " + t.getMessage());
             }
+        } else if (papiPresent && !papiToggle) {
+            getLogger().info("PlaceholderAPI detected but expansion disabled by config (placeholderapi.enabled=false)");
         }
 
-        // Register listener (inner class)
+        // Register join listener (extracted class)
         Bukkit.getPluginManager().registerEvents(new JoinListener(this), this);
 
         // Welcome GUI listener
         welcomeGui = new WelcomeGui(this);
         Bukkit.getPluginManager().registerEvents(welcomeGui, this);
+
+        // Initialize spectacular particle effects (lazy-init; disabled by default)
+        try {
+            if (config.getBoolean("particles.enabled", false)) {
+                particleManager = new ParticleManager(this);
+            }
+        } catch (Throwable ignored) {}
+
+        // Initialize animated NPC guides (lazy-init; disabled by default)
+        try {
+            if (config.getBoolean("animatedGuide.enabled", false)) {
+                guideManager = new AnimatedGuideManager(this);
+            }
+        } catch (Throwable ignored) {}
+
+        // Initialize BossBar welcome (lazy-init; disabled by default)
+        try {
+            if (config.getBoolean("bossbar.enabled", false)) {
+                bossBarManager = new BossBarWelcomeManager(this);
+            }
+        } catch (Throwable ignored) {}
+
+        // Initialize Action bar welcome (lazy-init; disabled by default)
+        try {
+            if (config.getBoolean("actionbar.enabled", false)) {
+                actionBarManager = new ActionBarManager(this);
+            }
+        } catch (Throwable ignored) {}
 
         // Initialize metrics (bStats) if enabled and pluginId > 0
         if (config.getBoolean("metrics.enabled", true)) {
@@ -165,10 +218,13 @@ public class FirstLogin extends JavaPlugin {
                 try {
                     Metrics m = new Metrics(this, pluginId);
                     // Simple charts for today's counters
-                    m.addCustomChart(new SingleLineChart("gui_opens_today", () -> metricsGuiOpensToday));
-                    m.addCustomChart(new SingleLineChart("rules_accepted_today", () -> metricsRulesAcceptedToday));
+                    m.addCustomChart(new SingleLineChart("gui_opens_today", () -> telemetryService != null ? telemetryService.getGuiOpensToday() : 0));
+                    m.addCustomChart(new SingleLineChart("rules_accepted_today", () -> telemetryService != null ? telemetryService.getRulesAcceptedToday() : 0));
                     // Per-item click distribution
-                    m.addCustomChart(new AdvancedPie("clicked_items_today", () -> new java.util.HashMap<>(telemetryItemClicksToday)));
+                    m.addCustomChart(new AdvancedPie("clicked_items_today", () -> {
+                        if (telemetryService != null) return new java.util.HashMap<>(telemetryService.getItemClicksTodaySnapshot());
+                        return new java.util.HashMap<>();
+                    }));
                 } catch (Throwable t) {
                     getLogger().warning("Could not start bStats metrics: " + t.getMessage());
                 }
@@ -178,8 +234,78 @@ public class FirstLogin extends JavaPlugin {
         String ver = getDescription().getVersion();
         log.info("FirstLogin " + ver + " - Enabled");
 
-        // Warm up players-to-date cache asynchronously to avoid first-use stall
+        // Warm up caches asynchronously to avoid first-use stall
         Bukkit.getScheduler().runTaskAsynchronously(this, this::refreshPlayersToDate);
+        Bukkit.getScheduler().runTaskAsynchronously(this, this::refreshRulesCounts);
+
+        // Register command executors and tab completers (migrated handler class)
+        try {
+            firstlogin.commands.FirstLoginCommand cmd = new firstlogin.commands.FirstLoginCommand(this);
+            if (getCommand("firstlogin") != null) {
+                getCommand("firstlogin").setExecutor(cmd);
+                getCommand("firstlogin").setTabCompleter(cmd);
+            }
+            if (getCommand("welcome") != null) {
+                getCommand("welcome").setExecutor(cmd);
+                getCommand("welcome").setTabCompleter(cmd);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    // Re-evaluate optional managers (particles, animated guide, bossbar) after config reload
+    public void reloadOptionalManagers() {
+        // Particles
+        try {
+            boolean want = getConfig().getBoolean("particles.enabled", false);
+            if (want) {
+                if (particleManager == null) particleManager = new ParticleManager(this);
+                else particleManager.reload();
+            } else {
+                particleManager = null; // GC; safe as tasks are scheduled on manager instances
+            }
+        } catch (Throwable ignored) {}
+
+        // Animated guide
+        try {
+            boolean want = getConfig().getBoolean("animatedGuide.enabled", false);
+            if (want) {
+                if (guideManager == null) guideManager = new AnimatedGuideManager(this);
+                else guideManager.reload();
+            } else {
+                if (guideManager != null) {
+                    try { guideManager.removeAllGuides(); } catch (Throwable ignored) {}
+                    guideManager = null;
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        // BossBar welcome
+        try {
+            boolean want = getConfig().getBoolean("bossbar.enabled", false);
+            if (want) {
+                if (bossBarManager == null) bossBarManager = new BossBarWelcomeManager(this);
+                else bossBarManager.reload();
+            } else {
+                if (bossBarManager != null) {
+                    try { bossBarManager.shutdown(); } catch (Throwable ignored) {}
+                    bossBarManager = null;
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        // Action bar welcome
+        try {
+            boolean want = getConfig().getBoolean("actionbar.enabled", false);
+            if (want) {
+                if (actionBarManager == null) actionBarManager = new ActionBarManager(this);
+                else actionBarManager.reload();
+            } else {
+                if (actionBarManager != null) {
+                    try { actionBarManager.shutdown(); } catch (Throwable ignored) {}
+                    actionBarManager = null;
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     @Override
@@ -187,21 +313,37 @@ public class FirstLogin extends JavaPlugin {
         // Flush any queued saves before shutdown, then do a final sync save
         try { flushPlayersSaves(); } catch (Throwable ignored) {}
         savePlayers();
-        // Persist telemetry for today
-        try { saveTelemetryToday(); } catch (Throwable ignored) {}
-        // Cancel telemetry reset task
-        try {
-            if (telemetryResetTaskId != -1) {
-                Bukkit.getScheduler().cancelTask(telemetryResetTaskId);
-                telemetryResetTaskId = -1;
-            }
-        } catch (Throwable ignored) {}
-        telemetryNextResetTs = 0L;
+        // Telemetry shutdown via service
+        if (telemetryService != null) {
+            try { telemetryService.shutdown(); } catch (Throwable ignored) {}
+        }
         // Unregister PAPI expansion if present
         if (papiExpansion != null) {
-            try { papiExpansion.unregister(); } catch (Throwable ignored) {}
+            try {
+                papiExpansion.unregister();
+            } catch (Throwable t) {
+                getLogger().fine("PlaceholderAPI expansion unregister suppressed: " + t.getMessage());
+            }
             papiExpansion = null;
         }
+
+        // Clean up animated guides
+        if (guideManager != null) {
+            guideManager.removeAllGuides();
+        }
+
+        // Clean up boss bars
+        if (bossBarManager != null) {
+            try { bossBarManager.shutdown(); } catch (Throwable ignored) {}
+            bossBarManager = null;
+        }
+
+        // Clean up action bars
+        if (actionBarManager != null) {
+            try { actionBarManager.shutdown(); } catch (Throwable ignored) {}
+            actionBarManager = null;
+        }
+
         if (adventure != null) {
             adventure.close();
             adventure = null;
@@ -210,12 +352,84 @@ public class FirstLogin extends JavaPlugin {
         log.info("FirstLogin " + ver + " - Disabled");
     }
 
+    // Public config reload hook used by commands/admins
+    public void reloadFirstLoginConfig() {
+        try {
+            reloadConfig();
+            config = getConfig();
+            ensureDefaultConfigValues();
+        } catch (Throwable ignored) {}
+        // Re-read runtime toggles
+        try {
+            playersSaveDebounceTicks = Math.max(1L, config.getLong("asyncSave.players.debounceTicks", 20L));
+            debugSaves = config.getBoolean("debug.saves", false);
+        } catch (Throwable ignored) {}
+        // Reload coordination configuration
+        try { loadCoordinationConfig(); } catch (Throwable ignored) {}
+        // Reschedule telemetry and apply persistence debounce
+        if (telemetryService != null) {
+            try { telemetryService.reloadConfigAndReschedule(); } catch (Throwable ignored) {}
+        }
+        // Re-evaluate PlaceholderAPI availability and (un)register expansion accordingly
+        try {
+            boolean papiPresent = org.bukkit.Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
+            boolean papiToggle = true;
+            try { papiToggle = config.getBoolean("placeholderapi.enabled", true); } catch (Throwable ignored) {}
+            boolean wantPapi = papiPresent && papiToggle;
+            if (wantPapi && papiExpansion == null) {
+                try {
+                    papiExpansion = new firstlogin.papi.FirstLoginExpansion(this);
+                    papiExpansion.register();
+                    getLogger().info("PlaceholderAPI expansion registered (reload)");
+                } catch (Throwable t) {
+                    getLogger().warning("Could not register PlaceholderAPI expansion on reload: " + t.getMessage());
+                    papiExpansion = null;
+                }
+            } else if (!wantPapi && papiExpansion != null) {
+                try { papiExpansion.unregister(); } catch (Throwable ignored) {}
+                papiExpansion = null;
+                getLogger().info("PlaceholderAPI expansion unregistered (reload)");
+            }
+            papiAvailable = wantPapi;
+        } catch (Throwable ignored) {}
+
+        // Re-evaluate optional managers based on new config
+        try { reloadOptionalManagers(); } catch (Throwable ignored) {}
+    }
+
     public void savePlayers() {
         try {
             players.save(playersFile);
         } catch (IOException e) {
             getLogger().severe("Could not save players.yml: " + e.getMessage());
         }
+    }
+
+    // Expose WelcomeGui for command handlers
+    public WelcomeGui getWelcomeGui() {
+        return welcomeGui;
+    }
+
+    // Expose Adventure and MiniMessage for managers
+    public BukkitAudiences getAdventure() { return adventure; }
+    public MiniMessage getMiniMessage() { return mm; }
+
+    // Pretty duration formatting shared across plugin and PAPI expansion
+    public static String formatDurationPretty(long millis) {
+        if (millis <= 0L) return "";
+        long totalSeconds = millis / 1000L;
+        long days = totalSeconds / 86400L;
+        long hours = (totalSeconds % 86400L) / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        StringBuilder sb = new StringBuilder();
+        if (days > 0) sb.append(days).append('d').append(' ');
+        if (hours > 0) sb.append(hours).append('h').append(' ');
+        if (minutes > 0) sb.append(minutes).append('m').append(' ');
+        if (seconds > 0 || sb.length() == 0) sb.append(seconds).append('s');
+        int len = sb.length();
+        if (len > 0 && sb.charAt(len - 1) == ' ') sb.setLength(len - 1);
+        return sb.toString();
     }
 
     // Queue a debounced asynchronous save of players.yml to avoid blocking the main thread.
@@ -315,6 +529,20 @@ public class FirstLogin extends JavaPlugin {
         // Delay (in ticks) before forced reopen happens after closing
         config.addDefault("welcomeGui.reopenDelayTicks", 1L);
 
+        // GUI sounds
+        config.addDefault("welcomeGui.sounds.open.enabled", false);
+        config.addDefault("welcomeGui.sounds.open.name", "BLOCK_CHEST_OPEN");
+        config.addDefault("welcomeGui.sounds.open.volume", 0.5);
+        config.addDefault("welcomeGui.sounds.open.pitch", 1.2);
+        config.addDefault("welcomeGui.sounds.close.enabled", false);
+        config.addDefault("welcomeGui.sounds.close.name", "BLOCK_CHEST_CLOSE");
+        config.addDefault("welcomeGui.sounds.close.volume", 0.5);
+        config.addDefault("welcomeGui.sounds.close.pitch", 1.2);
+        config.addDefault("welcomeGui.sounds.rulesAccepted.enabled", true);
+        config.addDefault("welcomeGui.sounds.rulesAccepted.name", "ENTITY_PLAYER_LEVELUP");
+        config.addDefault("welcomeGui.sounds.rulesAccepted.volume", 1.0);
+        config.addDefault("welcomeGui.sounds.rulesAccepted.pitch", 1.0);
+
         // Confirm dialog defaults
         // YES button
         config.addDefault("welcomeGui.confirmDialog.yes.material", "LIME_WOOL");
@@ -343,6 +571,8 @@ public class FirstLogin extends JavaPlugin {
         // Telemetry persistence
         config.addDefault("telemetry.persist.enabled", true);
         config.addDefault("telemetry.persist.retentionDays", 14);
+        // Debounce saves of telemetry.yml to reduce disk IO
+        config.addDefault("telemetry.persist.debounceTicks", 40);
         // Telemetry daily reset scheduling
         config.addDefault("telemetry.reset.enabled", true);
         config.addDefault("telemetry.reset.time", "04:00");
@@ -354,822 +584,227 @@ public class FirstLogin extends JavaPlugin {
         config.addDefault("metrics.enabled", true);
         config.addDefault("metrics.pluginId", 0);
 
-        config.options().copyDefaults(true);
-        saveConfig();
+        // Formatting defaults (used by PlaceholderAPI date formatting)
+        config.addDefault("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
+
+        // PlaceholderAPI toggle
+        config.addDefault("placeholderapi.enabled", true);
+
+        // Join-message coordination (to avoid multi-plugin welcome spam)
+        config.addDefault("coordination.enabled", true);
+        config.addDefault("coordination.role", "secondary"); // primary | secondary | exclusive
+        config.addDefault("coordination.waitTicks", 40);
+        config.addDefault("coordination.key", "firstlogin:welcome_claim");
+
+        // ===== SPECTACULAR FEATURES =====
+        // Particle effects configuration (experimental; disabled by default)
+        config.addDefault("particles.enabled", false);
+        config.addDefault("particles.effectType", "welcome_burst");
+        config.addDefault("particles.duration", 60);
+        config.addDefault("particles.radius", 2.0);
+        config.addDefault("particles.particleCount", 50);
+        config.addDefault("particles.colors.primary.red", 255);
+        config.addDefault("particles.colors.primary.green", 255);
+        config.addDefault("particles.colors.primary.blue", 0);
+        config.addDefault("particles.colors.secondary.red", 0);
+        config.addDefault("particles.colors.secondary.green", 255);
+        config.addDefault("particles.colors.secondary.blue", 255);
+
+        // Animated guide configuration (experimental; disabled by default)
+        config.addDefault("animatedGuide.enabled", false);
+        config.addDefault("animatedGuide.name", "&6Welcome Guide");
+        config.addDefault("animatedGuide.duration", 120);
+        config.addDefault("animatedGuide.spawnLocation.world", "world");
+        config.addDefault("animatedGuide.spawnLocation.x", 0.0);
+        config.addDefault("animatedGuide.spawnLocation.y", 100.0);
+        config.addDefault("animatedGuide.spawnLocation.z", 0.0);
+        config.addDefault("animatedGuide.spawnLocation.yaw", 0.0);
+        config.addDefault("animatedGuide.spawnLocation.pitch", 0.0);
+
+        // BossBar welcome (optional; disabled by default)
+        config.addDefault("bossbar.enabled", false);
+        config.addDefault("bossbar.text", "<gradient:#ffd54f:#ff9100><bold>Welcome, {player}!</bold></gradient>");
+        config.addDefault("bossbar.color", "PURPLE");
+        config.addDefault("bossbar.overlay", "PROGRESS");
+        config.addDefault("bossbar.durationSeconds", 8);
+
+        // Action bar welcome message (optional; disabled by default)
+        config.addDefault("actionbar.enabled", false);
+        config.addDefault("actionbar.text", "<gradient:#00ff88:#00aaff>Welcome to the server, {player}!</gradient>");
+        config.addDefault("actionbar.durationSeconds", 5);
+        config.addDefault("actionbar.refreshTicks", 20);
+    }
+
+    // Validate configuration and log warnings for common issues (returns count of warnings)
+    public int validateConfig() {
+        return validateConfig(null);
+    }
+
+    // Validate configuration with optional player to send messages to
+    public int validateConfig(Player recipient) {
+        int warnings = 0;
+        // Validate GUI items
+        org.bukkit.configuration.ConfigurationSection items = config.getConfigurationSection("welcomeGui.items");
+        if (items != null) {
+            int rows = Math.max(1, Math.min(6, config.getInt("welcomeGui.rows", 3)));
+            int maxSlot = rows * 9 - 1;
+            for (String key : items.getKeys(false)) {
+                org.bukkit.configuration.ConfigurationSection item = items.getConfigurationSection(key);
+                if (item == null) continue;
+                // Check material
+                String matName = item.getString("material", "PAPER");
+                if (matName != null && org.bukkit.Material.matchMaterial(matName.toUpperCase(java.util.Locale.ROOT)) == null) {
+                    getLogger().warning("[Config] Invalid material '" + matName + "' for GUI item '" + key + "'");
+                    warnings++;
+                }
+                // Check slot bounds
+                int slot = item.getInt("slot", -1);
+                if (slot < 0 || slot > maxSlot) {
+                    getLogger().warning("[Config] Slot " + slot + " out of bounds (0-" + maxSlot + ") for GUI item '" + key + "'");
+                    warnings++;
+                }
+                // Check click sound
+                String soundName = null;
+                org.bukkit.configuration.ConfigurationSection snd = item.getConfigurationSection("clickSound");
+                if (snd != null) soundName = snd.getString("name");
+                if (soundName != null && !soundName.isEmpty()) {
+                    try { org.bukkit.Sound.valueOf(soundName); }
+                    catch (IllegalArgumentException e) {
+                        getLogger().warning("[Config] Invalid sound '" + soundName + "' for GUI item '" + key + "'");
+                        warnings++;
+                    }
+                }
+            }
+        }
+        // Validate world name
+        String worldName = config.getString("World.name", "world");
+        if (Bukkit.getWorld(worldName) == null) {
+            getLogger().warning("[Config] World '" + worldName + "' not found. Some features may not work correctly.");
+            warnings++;
+        }
+        // Validate bossbar color/overlay
+        String bbColor = config.getString("bossbar.color", "PURPLE");
+        try { net.kyori.adventure.bossbar.BossBar.Color.valueOf(bbColor.toUpperCase(java.util.Locale.ROOT)); }
+        catch (IllegalArgumentException e) {
+            getLogger().warning("[Config] Invalid bossbar.color '" + bbColor + "'. Using PURPLE.");
+            warnings++;
+        }
+        String bbOverlay = config.getString("bossbar.overlay", "PROGRESS");
+        try { net.kyori.adventure.bossbar.BossBar.Overlay.valueOf(bbOverlay.toUpperCase(java.util.Locale.ROOT)); }
+        catch (IllegalArgumentException e) {
+            getLogger().warning("[Config] Invalid bossbar.overlay '" + bbOverlay + "'. Using PROGRESS.");
+            warnings++;
+        }
+        // Summary
+        if (warnings > 0) {
+            String msg = "[Config] Found " + warnings + " configuration issue(s). Please review your config.yml.";
+            getLogger().warning(msg);
+            if (recipient != null) recipient.sendMessage(org.bukkit.ChatColor.RED + msg);
+        } else {
+            String msg = "Configuration validated successfully.";
+            getLogger().info(msg);
+            if (recipient != null) recipient.sendMessage(org.bukkit.ChatColor.GREEN + msg);
+        }
+        return warnings;
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
-        if (!(sender instanceof Player)) return true;
-        Player player = (Player) sender;
+        try {
+            // Only handle player senders here; console will be handled by registered executors
+            if (!(sender instanceof Player)) return true;
 
-        String worldName = config.getString("World.name", "world");
-
-        // Determine playerdata dir for counting / listing players to date
-        File worldFolder = Bukkit.getWorld(worldName) != null
-                ? Bukkit.getWorld(worldName).getWorldFolder()
-                : Bukkit.getWorldContainer().toPath().resolve(worldName).toFile();
-        File playerDataDir = new File(worldFolder, "playerdata");
-        List<String> namesToDate = new ArrayList<>();
-        if (playerDataDir.isDirectory()) {
-            File[] files = playerDataDir.listFiles((dir, name) -> name.endsWith(".dat"));
-            if (files != null) {
-                for (File f : files) {
-                    String base = f.getName().substring(0, f.getName().length() - 4);
-                    try {
-                        UUID uuid = UUID.fromString(base);
-                        OfflinePlayer op = Bukkit.getOfflinePlayer(uuid);
-                        String name = op.getName();
-                        if (name != null) namesToDate.add(name);
-                    } catch (IllegalArgumentException ignored) {
-                        // Not a UUID (unlikely on modern), skip
-                    }
+            // If a command executor is registered for this command (FirstLoginCommand), delegate to it
+            try {
+                org.bukkit.command.PluginCommand pc = getCommand(cmd.getName());
+                if (pc != null && pc.getExecutor() != null && pc.getExecutor() != this) {
+                    return pc.getExecutor().onCommand(sender, cmd, label, args);
                 }
-            }
-        }
-
-        String cmdName = cmd.getName().toLowerCase(Locale.ROOT);
-        switch (cmdName) {
-            case "welcome": {
-                if (welcomeGui == null || !welcomeGui.isEnabled()) {
-                    player.sendMessage(ChatColor.RED + "Welcome GUI is not enabled.");
-                    return true;
-                }
-                int page = 1;
-                if (args.length >= 1) {
-                    try { page = Math.max(1, Integer.parseInt(args[0])); } catch (NumberFormatException ignored) {}
-                }
-                welcomeGui.openFor(player, page);
-                return true;
-            }
-            case "listp": {
-                if (!player.hasPermission("firstlogin.command.listp")) {
-                    sendMsg(player, msgFor(player, "messages.noPermission"), player, 0);
-                    return true;
-                }
-                int num = namesToDate.size();
-                player.sendMessage(ChatColor.DARK_RED + "Number of players joined to date: " + num);
-                return true;
-            }
-            case "pnames": {
-                if (!player.hasPermission("firstlogin.command.pnames")) {
-                    sendMsg(player, msgFor(player, "messages.noPermission"), player, 0);
-                    return true;
-                }
-                String names = namesToDate.stream().sorted(String.CASE_INSENSITIVE_ORDER).collect(Collectors.joining(", "));
-                player.sendMessage(ChatColor.DARK_RED + "Names of players joined to date: " + (names.isEmpty() ? "(none)" : names));
-                return true;
-            }
-            case "owner": {
-                if (!player.hasPermission("firstlogin.command.owner")) {
-                    sendMsg(player, msgFor(player, "messages.noPermission"), player, 0);
-                    return true;
-                }
-                String owner = config.getString("World.Owner", "default");
-                player.sendMessage(owner);
-                return true;
-            }
-            case "onlinep": {
-                if (!player.hasPermission("firstlogin.command.onlinep")) {
-                    sendMsg(player, msgFor(player, "messages.noPermission"), player, 0);
-                    return true;
-                }
-                int online = Bukkit.getOnlinePlayers().size();
-                int total = namesToDate.size();
-                player.sendMessage("Currently there are " + online + " of " + total + " players online.");
-                return true;
-            }
-            case "firsthelp": {
-                player.sendMessage("/listp: Lists the number of players joined to date.");
-                player.sendMessage("/pnames: Lists all the names of players that joined the server.");
-                player.sendMessage("/owner: Shows the owner of the server's name.");
-                player.sendMessage("/onlinep: Shows how many players are currently online.");
-                player.sendMessage("/firsthelp: Shows this help.");
-                return true;
-            }
-            case "firstlogin": {
-                // Allow non-admin locale override for self
-                if (args.length > 0 && args[0].equalsIgnoreCase("locale")) {
-                    if (args.length < 2) {
-                        sendMsg(player, msgFor(player, "messages.usageLocale"), player, namesToDate.size());
-                        return true;
-                    }
-                    String sub = args[1];
-                    if (sub.equalsIgnoreCase("reset")) {
-                        players.set("locale." + player.getUniqueId(), null);
-                        savePlayers();
-                        sendMsg(player, msgFor(player, "messages.localeReset"), player, namesToDate.size());
-                    } else {
-                        players.set("locale." + player.getUniqueId(), sub);
-                        savePlayers();
-                        sendMsg(player, msgFor(player, "messages.localeSet").replace("{locale}", sub), player, namesToDate.size());
-                    }
-                    return true;
-                }
-                if (args.length == 0) {
-                    sendMsg(player, msgFor(player, "messages.helpHeader"), player, namesToDate.size());
-                    sendMsg(player, msgFor(player, "messages.helpLine"), player, namesToDate.size());
-                    return true;
-                }
-                String sub = args[0].toLowerCase(Locale.ROOT);
-                switch (sub) {
-                    case "reload": {
-                        if (!hasAdminSub(player, "reload")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        reloadConfig();
-                        config = getConfig();
-                        ensureDefaultConfigValues();
-                        // Reload runtime toggles and reschedule reset
-                        try {
-                            playersSaveDebounceTicks = Math.max(1L, config.getLong("asyncSave.players.debounceTicks", 20L));
-                            debugSaves = config.getBoolean("debug.saves", false);
-                            debugTelemetry = config.getBoolean("debug.telemetry", false);
-                        } catch (Throwable ignored) {}
-                        messages = YamlConfiguration.loadConfiguration(messagesFile);
-                        // Extract any bundled locale files to data folder
-                        extractBundledLocaleFiles();
-                        papiAvailable = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
-                        localeCache.clear();
-                        try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
-                        sendMsg(player, msgFor(player, "messages.reloaded"), player, namesToDate.size());
-                        return true;
-                    }
-                    case "gui": {
-                        if (!hasAdminSub(player, "gui")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (welcomeGui == null) {
-                            player.sendMessage(ChatColor.RED + "Welcome GUI not initialized.");
-                            return true;
-                        }
-                        if (args.length == 1) {
-                            player.sendMessage(ChatColor.YELLOW + "Usage: /firstlogin gui <open|accept|trigger>");
-                            return true;
-                        }
-                        String sub2 = args[1].toLowerCase(Locale.ROOT);
-                        switch (sub2) {
-                            case "open": {
-                                Player target = player;
-                                int page = 1;
-                                if (args.length >= 3) {
-                                    // Support either: open <player> [page] OR open <page> (self)
-                                    try {
-                                        page = Math.max(1, Integer.parseInt(args[2]));
-                                    } catch (NumberFormatException nfe) {
-                                        Player p = Bukkit.getPlayerExact(args[2]);
-                                        if (p != null) target = p; else { player.sendMessage(ChatColor.RED + "Player not found."); return true; }
-                                    }
-                                }
-                                if (args.length >= 4) {
-                                    try { page = Math.max(1, Integer.parseInt(args[3])); } catch (NumberFormatException nfe) { player.sendMessage(ChatColor.YELLOW + "Page must be a number."); return true; }
-                                }
-                                welcomeGui.openFor(target, page);
-                                player.sendMessage(ChatColor.GREEN + "Opened GUI (page " + page + ") for " + target.getName());
-                                return true;
-                            }
-                            case "accept": {
-                                Player target = player;
-                                if (args.length >= 3) {
-                                    Player p = Bukkit.getPlayerExact(args[2]);
-                                    if (p != null) target = p; else { player.sendMessage(ChatColor.RED + "Player not found."); return true; }
-                                }
-                                welcomeGui.acceptRules(target);
-                                player.sendMessage(ChatColor.GREEN + "Marked rules accepted for " + target.getName());
-                                return true;
-                            }
-                            case "trigger": {
-                                if (args.length < 3) { player.sendMessage(ChatColor.YELLOW + "Usage: /firstlogin gui trigger <key> [player]"); return true; }
-                                String key = args[2];
-                                Player target = player;
-                                if (args.length >= 4) {
-                                    Player p = Bukkit.getPlayerExact(args[3]);
-                                    if (p != null) target = p; else { player.sendMessage(ChatColor.RED + "Player not found."); return true; }
-                                }
-                                welcomeGui.triggerItem(target, key);
-                                player.sendMessage(ChatColor.GREEN + "Triggered '" + key + "' for " + target.getName());
-                                return true;
-                            }
-                            default:
-                                player.sendMessage(ChatColor.YELLOW + "Usage: /firstlogin gui <open|accept|trigger>");
-                                return true;
-                        }
-                    }
-                    case "clearcooldown": {
-                        if (!hasAdminSub(player, "clearcooldown")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (args.length < 3) {
-                            player.sendMessage(ChatColor.YELLOW + "Usage: /firstlogin clearcooldown <player> <key|all>");
-                            return true;
-                        }
-                        OfflinePlayer op = getOfflineByName(args[1]);
-                        if (op == null || op.getUniqueId() == null) { player.sendMessage(ChatColor.RED + "Player not found: " + args[1]); return true; }
-                        String key = args[2];
-                        if (key.equalsIgnoreCase("all")) {
-                            players.set("cooldowns." + op.getUniqueId(), null);
-                            savePlayers();
-                            sendMsg(player, msgFor(player, "messages.clearedCooldownAll").replace("{player}", op.getName() == null ? args[1] : op.getName()), player, namesToDate.size());
-                        } else {
-                            players.set("cooldowns." + op.getUniqueId() + "." + key, null);
-                            savePlayers();
-                            sendMsg(player, msgFor(player, "messages.clearedCooldown").replace("{player}", op.getName() == null ? args[1] : op.getName()).replace("{key}", key), player, namesToDate.size());
-                        }
-                        return true;
-                    }
-                    case "clearflag": {
-                        if (!hasAdminSub(player, "clearflag")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (args.length < 3) {
-                            player.sendMessage(ChatColor.YELLOW + "Usage: /firstlogin clearflag <player> <flag|all>");
-                            return true;
-                        }
-                        OfflinePlayer op = getOfflineByName(args[1]);
-                        if (op == null || op.getUniqueId() == null) { player.sendMessage(ChatColor.RED + "Player not found: " + args[1]); return true; }
-                        String flag = args[2];
-                        if (flag.equalsIgnoreCase("all")) {
-                            players.set("flags." + op.getUniqueId(), null);
-                            savePlayers();
-                            sendMsg(player, msgFor(player, "messages.clearedAllFlags").replace("{player}", op.getName() == null ? args[1] : op.getName()), player, namesToDate.size());
-                        } else {
-                            String v = versionedFlagName(flag);
-                            players.set("flags." + op.getUniqueId() + "." + v, null);
-                            savePlayers();
-                            sendMsg(player, msgFor(player, "messages.clearedFlag").replace("{player}", op.getName() == null ? args[1] : op.getName()).replace("{flag}", v), player, namesToDate.size());
-                        }
-                        return true;
-                    }
-                    case "seen": {
-                        if (!hasAdminSub(player, "seen")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (args.length < 2) {
-                            sendMsg(player, msgFor(player, "messages.usageSeen"), player, namesToDate.size());
-                            return true;
-                        }
-                        String targetName = args[1];
-                        OfflinePlayer op = getOfflineByName(targetName);
-                        if (op == null || op.getUniqueId() == null) {
-                            player.sendMessage(ChatColor.RED + "Player not found: " + targetName);
-                            return true;
-                        }
-                        boolean seen = players.getBoolean("players." + op.getUniqueId(), false);
-                        sendMsg(player, msgFor(player, seen ? "messages.seenTrue" : "messages.seenFalse").replace("{player}", op.getName() == null ? targetName : op.getName()), player, namesToDate.size());
-                        return true;
-                    }
-                    case "reset": {
-                        if (!hasAdminSub(player, "reset")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (args.length < 2) {
-                            sendMsg(player, msgFor(player, "messages.usageReset"), player, namesToDate.size());
-                            return true;
-                        }
-                        String who = args[1];
-                        if (who.equalsIgnoreCase("all")) {
-                            players.set("players", null);
-                            savePlayers();
-                            sendMsg(player, msgFor(player, "messages.resetAll"), player, namesToDate.size());
-                        } else {
-                            OfflinePlayer op = getOfflineByName(who);
-                            if (op == null || op.getUniqueId() == null) {
-                                player.sendMessage(ChatColor.RED + "Player not found: " + who);
-                                return true;
-                            }
-                            players.set("players." + op.getUniqueId(), false);
-                            savePlayers();
-                            sendMsg(player, msgFor(player, "messages.resetPlayer").replace("{player}", op.getName() == null ? who : op.getName()), player, namesToDate.size());
-                        }
-                        return true;
-                    }
-                    case "status": {
-                        if (!hasAdminSub(player, "status")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        OfflinePlayer target = player;
-                        if (args.length >= 2) {
-                            OfflinePlayer op = getOfflineByName(args[1]);
-                            if (op == null || op.getUniqueId() == null) { player.sendMessage(ChatColor.RED + "Player not found: " + args[1]); return true; }
-                            target = op;
-                        }
-                        UUID tu = target.getUniqueId();
-                        String tName = target.getName() == null ? (args.length >= 2 ? args[1] : player.getName()) : target.getName();
-                        String loc = players.getString("locale." + tu, "(default)");
-                        boolean accepted = players.getBoolean("flags." + tu + "." + versionedFlagName("rules"), false);
-                        org.bukkit.configuration.ConfigurationSection fcs = players.getConfigurationSection("flags." + tu);
-                        org.bukkit.configuration.ConfigurationSection ccs = players.getConfigurationSection("cooldowns." + tu);
-                        Set<String> flags = fcs != null ? fcs.getKeys(false) : java.util.Collections.emptySet();
-                        Set<String> cds = ccs != null ? ccs.getKeys(false) : java.util.Collections.emptySet();
-                        player.sendMessage(ChatColor.AQUA + "== FirstLogin Status: " + ChatColor.WHITE + tName + ChatColor.AQUA + " ==");
-                        player.sendMessage(ChatColor.GRAY + "Locale: " + ChatColor.YELLOW + loc);
-                        player.sendMessage(ChatColor.GRAY + "Rules accepted: " + (accepted ? ChatColor.GREEN + "yes" : ChatColor.RED + "no"));
-                        player.sendMessage(ChatColor.GRAY + "Flags(" + flags.size() + "): " + ChatColor.YELLOW + (flags.isEmpty() ? "(none)" : String.join(", ", flags)));
-                        player.sendMessage(ChatColor.GRAY + "Cooldown keys(" + cds.size() + "): " + ChatColor.YELLOW + (cds.isEmpty() ? "(none)" : String.join(", ", cds)));
-                        return true;
-                    }
-                    case "set": {
-                        if (!hasAdminSub(player, "set")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (args.length < 3) {
-                            player.sendMessage(ChatColor.YELLOW + "Usage: /firstlogin set <key> <value>");
-                            return true;
-                        }
-                        String key = args[1];
-                        String value = args[2];
-                        try {
-                            switch (key.toLowerCase(Locale.ROOT)) {
-                                case "welcomegui.reopenonjoinuntilaccepted":
-                                case "debug.gui":
-                                case "debug.inventory":
-                                case "welcomegui.blockcloseuntilaccepted":
-                                case "welcomegui.confirmonaccept": {
-                                    boolean b = Boolean.parseBoolean(value);
-                                    config.set(key, b);
-                                    saveConfig();
-                                    player.sendMessage(ChatColor.GREEN + "Set " + key + " = " + b);
-                                    break;
-                                }
-                                case "telemetry.reset.enabled": {
-                                    boolean b = Boolean.parseBoolean(value);
-                                    config.set("telemetry.reset.enabled", b);
-                                    saveConfig();
-                                    try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
-                                    if (b) {
-                                        String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
-                                        long ts = telemetryNextResetTs;
-                                        String when;
-                                        try { when = ts > 0L ? new java.text.SimpleDateFormat(pat).format(new java.util.Date(ts)) : "(unknown)"; }
-                                        catch (Throwable ignored) { when = Long.toString(Math.max(0L, ts)); }
-                                        player.sendMessage(ChatColor.GREEN + "Enabled daily telemetry reset. Next reset: " + ChatColor.YELLOW + when);
-                                    } else {
-                                        player.sendMessage(ChatColor.GREEN + "Disabled daily telemetry reset.");
-                                    }
-                                    break;
-                                }
-                                case "telemetry.reset.time": {
-                                    // Expect HH:mm (24h). Validate before applying.
-                                    java.time.LocalTime t;
-                                    try {
-                                        t = java.time.LocalTime.parse(value);
-                                    } catch (Throwable ex) {
-                                        player.sendMessage(ChatColor.RED + "Invalid time format. Use HH:mm (e.g. 04:00).");
-                                        return true;
-                                    }
-                                    String norm = String.format(java.util.Locale.ROOT, "%02d:%02d", t.getHour(), t.getMinute());
-                                    config.set("telemetry.reset.time", norm);
-                                    saveConfig();
-                                    try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
-                                    String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
-                                    long ts = telemetryNextResetTs;
-                                    String when;
-                                    try { when = ts > 0L ? new java.text.SimpleDateFormat(pat).format(new java.util.Date(ts)) : "(disabled)"; }
-                                    catch (Throwable ignored) { when = Long.toString(Math.max(0L, ts)); }
-                                    player.sendMessage(ChatColor.GREEN + "Set telemetry reset time = " + norm + ChatColor.GREEN + ". Next reset: " + ChatColor.YELLOW + when);
-                                    break;
-                                }
-                                case "welcomegui.rulesversion": {
-                                    int v = Integer.parseInt(value);
-                                    if (v < 1) v = 1;
-                                    config.set(key, v);
-                                    saveConfig();
-                                    player.sendMessage(ChatColor.GREEN + "Set " + key + " = " + v);
-                                    break;
-                                }
-                                default:
-                                    player.sendMessage(ChatColor.RED + "Unknown key: " + key);
-                            }
-                        } catch (NumberFormatException nfe) {
-                            player.sendMessage(ChatColor.RED + "Value must be a number: " + value);
-                        }
-                        return true;
-                    }
-                    case "metrics": {
-                        if (!hasAdminSub(player, "metrics")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (args.length >= 2) {
-                            if (args[1].equalsIgnoreCase("reset")) {
-                                resetMetrics();
-                                player.sendMessage(ChatColor.YELLOW + "Telemetry counters reset for today.");
-                                return true;
-                            }
-                            if (args[1].equalsIgnoreCase("now")) {
-                                resetMetrics();
-                                try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
-                                player.sendMessage(ChatColor.YELLOW + "Telemetry counters reset and schedule recalculated.");
-                                return true;
-                            }
-                            if (args[1].equalsIgnoreCase("when")) {
-                                String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
-                                if (telemetryLastResetTs > 0L) {
-                                    String when;
-                                    try { when = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryLastResetTs)); }
-                                    catch (Throwable ignored) { when = Long.toString(telemetryLastResetTs); }
-                                    long delta = Math.max(0L, System.currentTimeMillis() - telemetryLastResetTs);
-                                    // Build pretty "ago" using simple units
-                                    long secs = delta / 1000L, mins = secs / 60L, hrs = mins / 60L, days = hrs / 24L;
-                                    String ago = days > 0 ? (days + "d ") : "";
-                                    hrs %= 24; mins %= 60; secs %= 60;
-                                    if (hrs > 0) ago += hrs + "h ";
-                                    if (mins > 0) ago += mins + "m ";
-                                    ago += secs + "s ago";
-                                    player.sendMessage(ChatColor.GRAY + "Last reset: " + ChatColor.YELLOW + when + ChatColor.DARK_GRAY + " (" + ago.trim() + ")");
-                                } else {
-                                    player.sendMessage(ChatColor.GRAY + "Last reset: " + ChatColor.YELLOW + "(never)");
-                                }
-                                if (telemetryNextResetTs > 0L) {
-                                    String whenNext;
-                                    try { whenNext = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryNextResetTs)); }
-                                    catch (Throwable ignored) { whenNext = Long.toString(telemetryNextResetTs); }
-                                    long delta = Math.max(0L, telemetryNextResetTs - System.currentTimeMillis());
-                                    long secs = delta / 1000L, mins = secs / 60L, hrs = mins / 60L, days = hrs / 24L;
-                                    String in = days > 0 ? (days + "d ") : "";
-                                    hrs %= 24; mins %= 60; secs %= 60;
-                                    if (hrs > 0) in += hrs + "h ";
-                                    if (mins > 0) in += mins + "m ";
-                                    in += secs + "s";
-                                    player.sendMessage(ChatColor.GRAY + "Next reset: " + ChatColor.YELLOW + whenNext + ChatColor.DARK_GRAY + " (in " + in.trim() + ")");
-                                } else {
-                                    player.sendMessage(ChatColor.GRAY + "Next reset: " + ChatColor.YELLOW + "(disabled)");
-                                }
-                                return true;
-                            }
-                        }
-                        player.sendMessage(ChatColor.AQUA + "== FirstLogin Telemetry (today) ==");
-                        player.sendMessage(ChatColor.GRAY + "GUI opens: " + ChatColor.YELLOW + metricsGuiOpensToday);
-                        player.sendMessage(ChatColor.GRAY + "Rules accepted: " + ChatColor.YELLOW + metricsRulesAcceptedToday);
-                        if (!telemetryItemClicksToday.isEmpty()) {
-                            player.sendMessage(ChatColor.GRAY + "Item clicks:");
-                            for (java.util.Map.Entry<String, Integer> e : new java.util.TreeMap<>(telemetryItemClicksToday).entrySet()) {
-                                player.sendMessage(ChatColor.DARK_GRAY + " - " + ChatColor.GRAY + e.getKey() + ": " + ChatColor.YELLOW + e.getValue());
-                            }
-                        }
-                        // Last reset info
-                        if (telemetryLastResetTs > 0L) {
-                            String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
-                            String when;
-                            try { when = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryLastResetTs)); }
-                            catch (Throwable ignored) { when = Long.toString(telemetryLastResetTs); }
-                            player.sendMessage(ChatColor.GRAY + "Last reset: " + ChatColor.YELLOW + when);
-                        }
-                        // Next reset info
-                        if (telemetryNextResetTs > 0L) {
-                            String pat = config.getString("formatting.datePattern", "yyyy-MM-dd HH:mm:ss");
-                            String whenNext;
-                            try { whenNext = new java.text.SimpleDateFormat(pat).format(new java.util.Date(telemetryNextResetTs)); }
-                            catch (Throwable ignored) { whenNext = Long.toString(telemetryNextResetTs); }
-                            player.sendMessage(ChatColor.GRAY + "Next reset: " + ChatColor.YELLOW + whenNext);
-                        }
-                        return true;
-                    }
-                    case "forceopen": {
-                        if (!hasAdminSub(player, "forceopen")) { sendMsg(player, msgFor(player, "messages.noPermission"), player, namesToDate.size()); return true; }
-                        if (welcomeGui == null || !welcomeGui.isEnabled()) { player.sendMessage(ChatColor.RED + "Welcome GUI is not enabled."); return true; }
-                        int count = 0;
-                        for (Player p : Bukkit.getOnlinePlayers()) {
-                            if (!hasAcceptedRules(p)) {
-                                welcomeGui.openFor(p, 1);
-                                count++;
-                            }
-                        }
-                        player.sendMessage(ChatColor.GREEN + "Reopened Welcome GUI for " + count + " player(s) who have not accepted current rules version.");
-                        return true;
-                    }
-                    default:
-                        sendMsg(player, msgFor(player, "messages.helpHeader"), player, namesToDate.size());
-                        sendMsg(player, msgFor(player, "messages.helpLine"), player, namesToDate.size());
-                        return true;
-                }
-            }
-            default:
-                return false;
+            } catch (Throwable ignored) {}
+            // No fallback here; let Bukkit handle others
+            return false;
+        } catch (Throwable ignored) {
+            return true;
         }
     }
 
-    @Override
-    public List<String> onTabComplete(CommandSender sender, Command cmd, String alias, String[] args) {
-        if (!cmd.getName().equalsIgnoreCase("firstlogin")) return Collections.emptyList();
-
-        // Helper to filter with case-insensitive startsWith
-        java.util.function.BiFunction<List<String>, String, List<String>> filter = (list, pref) -> {
-            String p = pref == null ? "" : pref.toLowerCase(Locale.ROOT);
-            return list.stream().filter(s -> s != null && s.toLowerCase(Locale.ROOT).startsWith(p)).sorted(String.CASE_INSENSITIVE_ORDER).collect(Collectors.toList());
-        };
-
-        if (args.length == 1) {
-            List<String> base = new ArrayList<>();
-            base.add("locale");
-            if (sender.hasPermission("firstlogin.admin")) {
-                base.addAll(Arrays.asList("reload", "gui", "clearcooldown", "clearflag", "seen", "reset", "status", "set", "metrics", "forceopen"));
-            }
-            return filter.apply(base, args[0]);
-        }
-
-        if (args.length == 2) {
-            String sub = args[0].toLowerCase(Locale.ROOT);
-            switch (sub) {
-                case "locale": {
-                    // Suggest reset + available locale tags from data folder (messages_*.yml)
-                    Set<String> opts = new HashSet<>();
-                    opts.add("reset");
-                    try {
-                        File df = getDataFolder();
-                        File[] files = df.listFiles((dir, name) -> name.startsWith("messages_") && name.endsWith(".yml"));
-                        if (files != null) {
-                            for (File f : files) {
-                                String n = f.getName();
-                                String tag = n.substring("messages_".length(), n.length() - 4);
-                                if (!tag.isEmpty()) {
-                                    opts.add(tag);
-                                    int us = tag.indexOf('_');
-                                    if (us > 0) opts.add(tag.substring(0, us));
-                                }
-                            }
-                        }
-                    } catch (Throwable ignored) {}
-                    return filter.apply(new ArrayList<>(opts), args[1]);
-                }
-                case "gui":
-                    return filter.apply(Arrays.asList("open", "accept", "trigger"), args[1]);
-                case "clearcooldown":
-                case "clearflag":
-                case "seen":
-                case "reset": {
-                    List<String> names = new ArrayList<>();
-                    if (sub.equals("reset")) names.add("all");
-                    for (Player p : Bukkit.getOnlinePlayers()) names.add(p.getName());
-                    for (OfflinePlayer p : Bukkit.getOfflinePlayers()) if (p.getName() != null) names.add(p.getName());
-                    return filter.apply(names, args[1]);
-                }
-                case "status": {
-                    List<String> names = new ArrayList<>();
-                    for (Player p : Bukkit.getOnlinePlayers()) names.add(p.getName());
-                    for (OfflinePlayer p : Bukkit.getOfflinePlayers()) if (p.getName() != null) names.add(p.getName());
-                    return filter.apply(names, args[1]);
-                }
-                case "set": {
-                    List<String> keys = Arrays.asList(
-                            "welcomegui.reopenonjoinuntilaccepted",
-                            "welcomegui.blockcloseuntilaccepted",
-                            "welcomegui.confirmonaccept",
-                            "welcomegui.rulesversion",
-                            "debug.gui",
-                            "debug.inventory",
-                            "telemetry.reset.enabled",
-                            "telemetry.reset.time"
-                    );
-                    return filter.apply(keys, args[1]);
-                }
-                case "metrics": {
-                    return filter.apply(Arrays.asList("reset", "when", "now"), args[1]);
-                }
-                default:
-                    return Collections.emptyList();
-            }
-        }
-
-        if (args.length == 3) {
-            String sub = args[0].toLowerCase(Locale.ROOT);
-            switch (sub) {
-                case "clearcooldown": {
-                    OfflinePlayer op = getOfflineByName(args[1]);
-                    if (op == null || op.getUniqueId() == null) return Collections.emptyList();
-                    Set<String> keys = new HashSet<>();
-                    keys.add("all");
-                    String path = "cooldowns." + op.getUniqueId();
-                    org.bukkit.configuration.ConfigurationSection cs = players.getConfigurationSection(path);
-                    if (cs != null) keys.addAll(cs.getKeys(false));
-                    return keys.stream().sorted(String.CASE_INSENSITIVE_ORDER).filter(k -> k.toLowerCase(Locale.ROOT).startsWith(args[2].toLowerCase(Locale.ROOT))).collect(Collectors.toList());
-                }
-                case "clearflag": {
-                    OfflinePlayer op = getOfflineByName(args[1]);
-                    if (op == null || op.getUniqueId() == null) return Collections.emptyList();
-                    Set<String> keys = new HashSet<>();
-                    keys.add("all");
-                    String path = "flags." + op.getUniqueId();
-                    org.bukkit.configuration.ConfigurationSection cs = players.getConfigurationSection(path);
-                    if (cs != null) keys.addAll(cs.getKeys(false));
-                    return keys.stream().sorted(String.CASE_INSENSITIVE_ORDER).filter(k -> k.toLowerCase(Locale.ROOT).startsWith(args[2].toLowerCase(Locale.ROOT))).collect(Collectors.toList());
-                }
-                case "gui": {
-                    String sub2 = args[1].toLowerCase(Locale.ROOT);
-                    if (sub2.equals("open") || sub2.equals("accept")) {
-                        List<String> names = new ArrayList<>();
-                        for (Player p : Bukkit.getOnlinePlayers()) names.add(p.getName());
-                        for (OfflinePlayer p : Bukkit.getOfflinePlayers()) if (p.getName() != null) names.add(p.getName());
-                        return names.stream().sorted(String.CASE_INSENSITIVE_ORDER).filter(n -> n.toLowerCase(Locale.ROOT).startsWith(args[2].toLowerCase(Locale.ROOT))).collect(Collectors.toList());
-                    }
-                    if (sub2.equals("trigger")) {
-                        org.bukkit.configuration.ConfigurationSection items = config.getConfigurationSection("welcomeGui.items");
-                        List<String> keys = items != null ? new ArrayList<>(items.getKeys(false)) : Collections.emptyList();
-                        return keys.stream().sorted(String.CASE_INSENSITIVE_ORDER).filter(k -> k.toLowerCase(Locale.ROOT).startsWith(args[2].toLowerCase(Locale.ROOT))).collect(Collectors.toList());
-                    }
-                    return Collections.emptyList();
-                }
-                case "set": {
-                    String key = args[1].toLowerCase(Locale.ROOT);
-                    if (key.equals("welcomegui.rulesversion")) {
-                        return filter.apply(Arrays.asList("1", "2", "3"), args[2]);
-                    }
-                    if (key.equals("telemetry.reset.enabled")) {
-                        return filter.apply(Arrays.asList("true", "false"), args[2]);
-                    }
-                    if (key.equals("telemetry.reset.time")) {
-                        return filter.apply(Arrays.asList("00:00", "04:00", "12:00", "23:59"), args[2]);
-                    }
-                    // booleans
-                    return filter.apply(Arrays.asList("true", "false"), args[2]);
-                }
-                default:
-                    return Collections.emptyList();
-            }
-        }
-
-        if (args.length == 4) {
-            String sub = args[0].toLowerCase(Locale.ROOT);
-            if (sub.equals("gui") && args[1].equalsIgnoreCase("trigger")) {
-                List<String> names = new ArrayList<>();
-                for (Player p : Bukkit.getOnlinePlayers()) names.add(p.getName());
-                for (OfflinePlayer p : Bukkit.getOfflinePlayers()) if (p.getName() != null) names.add(p.getName());
-                return names.stream().sorted(String.CASE_INSENSITIVE_ORDER).filter(n -> n.toLowerCase(Locale.ROOT).startsWith(args[3].toLowerCase(Locale.ROOT))).collect(Collectors.toList());
-            }
-        }
-
-        return Collections.emptyList();
-    }
-
-    // Granular admin permission helper
-    private boolean hasAdminSub(Player player, String sub) {
-        if (player.hasPermission("firstlogin.admin")) return true;
-        // If lacking admin permission, we still allow action-specific perms, but this helper
-        // is used for admin subcommands; default deny.
-        return false;
-    }
+    
 
     public void recordGuiOpen() {
-        ensureMetricsDay();
-        metricsGuiOpensToday++;
-        try { saveTelemetryToday(); } catch (Throwable ignored) {}
+        if (telemetryService != null) telemetryService.recordGuiOpen();
     }
 
     public void recordRulesAccepted() {
-        ensureMetricsDay();
-        metricsRulesAcceptedToday++;
-        try { saveTelemetryToday(); } catch (Throwable ignored) {}
+        if (telemetryService != null) telemetryService.recordRulesAccepted();
     }
 
     public void recordItemClick(String key) {
         if (key == null || key.isEmpty()) return;
-        ensureMetricsDay();
-        telemetryItemClicksToday.merge(key, 1, Integer::sum);
-        try { saveTelemetryToday(); } catch (Throwable ignored) {}
+        if (telemetryService != null) telemetryService.recordItemClick(key);
     }
 
-    public void resetMetrics() {
-        metricsGuiOpensToday = 0;
-        metricsRulesAcceptedToday = 0;
-        telemetryItemClicksToday.clear();
-        metricsDay = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date());
+    // ===== Coordination config and helpers =====
+    private void loadCoordinationConfig() {
+        boolean enabled;
+        String role;
+        long waitTicks;
+        String keyString;
+        NamespacedKey key;
+        try { enabled = config.getBoolean("coordination.enabled", true); } catch (Throwable ignored) { enabled = true; }
         try {
-            saveTelemetryToday();
-            markTelemetryReset();
-        } catch (Throwable ignored) {}
-    }
-
-    // ===== Telemetry persistence (telemetry.yml) =====
-    private void initTelemetryPersistence() {
-        telemetryPersistEnabled = config.getBoolean("telemetry.persist.enabled", true);
-        telemetryRetentionDays = Math.max(0, config.getInt("telemetry.persist.retentionDays", 14));
-        telemetryFile = new File(getDataFolder(), "telemetry.yml");
-        if (!telemetryFile.exists()) {
-            try { // noinspection ResultOfMethodCallIgnored
-                telemetryFile.createNewFile();
-            } catch (IOException e) {
-                getLogger().warning("Could not create telemetry.yml: " + e.getMessage());
+            String r = config.getString("coordination.role", "secondary");
+            role = (r == null ? "secondary" : r.toLowerCase(java.util.Locale.ROOT));
+        } catch (Throwable ignored) { role = "secondary"; }
+        try { waitTicks = Math.max(0L, config.getLong("coordination.waitTicks", 40L)); } catch (Throwable ignored) { waitTicks = 40L; }
+        String keyConfig;
+        try { keyConfig = config.getString("coordination.key", "firstlogin:welcome_claim"); } catch (Throwable ignored) { keyConfig = "firstlogin:welcome_claim"; }
+        if (keyConfig == null || keyConfig.isEmpty()) keyConfig = "firstlogin:welcome_claim";
+        try {
+            String ks = keyConfig;
+            String ns;
+            String k;
+            int colon = ks.indexOf(':');
+            if (colon > 0 && colon < ks.length() - 1) {
+                ns = ks.substring(0, colon);
+                k = ks.substring(colon + 1);
+            } else {
+                ns = getName().toLowerCase(java.util.Locale.ROOT);
+                k = ks;
             }
+            key = new NamespacedKey(this, k);
+            keyString = ((ns == null ? getName().toLowerCase(java.util.Locale.ROOT) : ns) + "_" + k).replace(':', '_');
+        } catch (Throwable ignored) {
+            try { key = new NamespacedKey(this, "welcome_claim"); } catch (Throwable t2) { key = null; }
+            keyString = "firstlogin_welcome_claim";
         }
-        telemetry = YamlConfiguration.loadConfiguration(telemetryFile);
-        String today = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date());
-        metricsDay = today;
-        // Load last reset timestamp if present
-        try { telemetryLastResetTs = telemetry.getLong("lastReset.ts", 0L); } catch (Throwable ignored) {}
-        if (telemetryPersistEnabled) {
-            metricsGuiOpensToday = telemetry.getInt("days." + today + ".guiOpens", metricsGuiOpensToday);
-            metricsRulesAcceptedToday = telemetry.getInt("days." + today + ".rulesAccepted", metricsRulesAcceptedToday);
-            org.bukkit.configuration.ConfigurationSection ic = telemetry.getConfigurationSection("days." + today + ".itemClicks");
-            telemetryItemClicksToday.clear();
-            if (ic != null) {
-                for (String k : ic.getKeys(false)) {
-                    telemetryItemClicksToday.put(k, ic.getInt(k, 0));
-                }
-            }
-            try { saveTelemetryToday(); pruneTelemetryRetention(); } catch (Throwable ignored) {}
-        }
+        try { coordinationService = new CoordinationService(this, enabled, role, waitTicks, key, keyString); }
+        catch (Throwable ignored) { coordinationService = null; }
     }
 
-    private void ensureMetricsDay() {
-        String today = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date());
-        if (metricsDay != null && metricsDay.equals(today)) return;
-        metricsDay = today;
-        // Reset in-memory counters and load persisted values for today if any
-        metricsGuiOpensToday = 0;
-        metricsRulesAcceptedToday = 0;
-        telemetryItemClicksToday.clear();
-        if (telemetryPersistEnabled && telemetry != null) {
-            metricsGuiOpensToday = telemetry.getInt("days." + today + ".guiOpens", 0);
-            metricsRulesAcceptedToday = telemetry.getInt("days." + today + ".rulesAccepted", 0);
-            org.bukkit.configuration.ConfigurationSection ic = telemetry.getConfigurationSection("days." + today + ".itemClicks");
-            if (ic != null) for (String k : ic.getKeys(false)) telemetryItemClicksToday.put(k, ic.getInt(k, 0));
-            try { saveTelemetryToday(); pruneTelemetryRetention(); } catch (Throwable ignored) {}
-        }
-    }
+    public void resetMetrics() { if (telemetryService != null) telemetryService.resetMetrics(); }
 
-    private void saveTelemetryToday() {
-        if (!telemetryPersistEnabled || telemetry == null) return;
-        telemetry.set("days." + metricsDay + ".guiOpens", metricsGuiOpensToday);
-        telemetry.set("days." + metricsDay + ".rulesAccepted", metricsRulesAcceptedToday);
-        // Overwrite itemClicks section
-        telemetry.set("days." + metricsDay + ".itemClicks", null);
-        for (java.util.Map.Entry<String, Integer> e : telemetryItemClicksToday.entrySet()) {
-            telemetry.set("days." + metricsDay + ".itemClicks." + e.getKey(), e.getValue());
-        }
-        try {
-            telemetry.save(telemetryFile);
-        } catch (IOException e) {
-            getLogger().warning("Failed to save telemetry.yml: " + e.getMessage());
-        }
-    }
-
-    private void pruneTelemetryRetention() {
-        if (!telemetryPersistEnabled || telemetry == null) return;
-        org.bukkit.configuration.ConfigurationSection days = telemetry.getConfigurationSection("days");
-        if (days == null) return;
-        try {
-            java.time.LocalDate cutoff = java.time.LocalDate.now().minusDays(Math.max(0, telemetryRetentionDays - 1L));
-            for (String key : new java.util.HashSet<>(days.getKeys(false))) {
-                try {
-                    java.time.LocalDate d = java.time.LocalDate.parse(key);
-                    if (d.isBefore(cutoff)) telemetry.set("days." + key, null);
-                } catch (Throwable ignored) {}
-            }
-            telemetry.save(telemetryFile);
-        } catch (IOException ignored) {}
-    }
-
-    // ===== Telemetry reset helpers =====
-    private void scheduleTelemetryReset() {
-        try {
-            telemetryResetEnabled = config.getBoolean("telemetry.reset.enabled", true);
-            telemetryResetTime = config.getString("telemetry.reset.time", "04:00");
-        } catch (Throwable ignored) {}
-        // Cancel any existing
-        try {
-            if (telemetryResetTaskId != -1) {
-                Bukkit.getScheduler().cancelTask(telemetryResetTaskId);
-                telemetryResetTaskId = -1;
-            }
-        } catch (Throwable ignored) {}
-        telemetryNextResetTs = 0L;
-        if (!telemetryResetEnabled) return;
-
-        java.time.LocalTime resetAt;
-        try { resetAt = java.time.LocalTime.parse(telemetryResetTime); }
-        catch (Throwable t) { resetAt = java.time.LocalTime.of(4, 0); }
-
-        java.time.ZoneId zone = java.time.ZoneId.systemDefault();
-        java.time.ZonedDateTime now = java.time.ZonedDateTime.now(zone);
-        java.time.ZonedDateTime todayReset = now.withHour(resetAt.getHour()).withMinute(resetAt.getMinute()).withSecond(0).withNano(0);
-        // Determine if we should reset immediately (server started after today's reset time and we haven't reset today)
-        boolean didResetToday = false;
-        try {
-            if (telemetryLastResetTs > 0) {
-                java.time.LocalDate last = java.time.Instant.ofEpochMilli(telemetryLastResetTs).atZone(zone).toLocalDate();
-                didResetToday = last.equals(now.toLocalDate());
-            }
-        } catch (Throwable ignored) {}
-
-        if (!didResetToday && !now.isBefore(todayReset)) {
-            if (debugTelemetry) getLogger().info("[debug.telemetry] Performing immediate telemetry reset (missed scheduled time)");
-            try { performTelemetryReset(); } catch (Throwable ignored) {}
-            // After immediate reset, schedule next for tomorrow
-            now = java.time.ZonedDateTime.now(zone);
-            todayReset = now.plusDays(1).withHour(resetAt.getHour()).withMinute(resetAt.getMinute()).withSecond(0).withNano(0);
-        } else if (now.isAfter(todayReset)) {
-            todayReset = todayReset.plusDays(1);
-        }
-
-        long delayTicks = Math.max(1L, java.time.Duration.between(now, todayReset).getSeconds() * 20L);
-        telemetryNextResetTs = todayReset.toInstant().toEpochMilli();
-        if (debugTelemetry) getLogger().info("[debug.telemetry] Scheduling telemetry reset in " + delayTicks + " ticks at " + todayReset);
-        telemetryResetTaskId = Bukkit.getScheduler().runTaskLater(this, () -> {
-            try { performTelemetryReset(); } catch (Throwable ignored) {}
-            // Chain next schedule
-            try { scheduleTelemetryReset(); } catch (Throwable ignored) {}
-        }, delayTicks).getTaskId();
-    }
-
-    private void performTelemetryReset() {
-        resetMetrics();
-        if (debugTelemetry) getLogger().info("[debug.telemetry] Telemetry counters reset and persisted.");
-    }
-
-    private void markTelemetryReset() {
-        telemetryLastResetTs = System.currentTimeMillis();
-        if (telemetry == null) return;
-        String date = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date(telemetryLastResetTs));
-        telemetry.set("lastReset.ts", telemetryLastResetTs);
-        telemetry.set("lastReset.date", date);
-        try { telemetry.save(telemetryFile); } catch (IOException ignored) {}
-    }
+    // (legacy telemetry helpers removed; TelemetryService owns persistence and scheduling)
 
     // ===== Helpers and stubs to complete build =====
     public String msgFor(Player player, String path) {
         try {
-            String s = messages != null ? messages.getString(path) : null;
+            String s = null;
+            // Try player's locale-specific messages file first
+            if (player != null) {
+                String locale = players.getString("locale." + player.getUniqueId(), null);
+                if (locale != null && !locale.isEmpty()) {
+                    // Try to load locale-specific messages file
+                    java.io.File localeFile = new java.io.File(getDataFolder(), "messages_" + locale.toLowerCase(java.util.Locale.ROOT) + ".yml");
+                    if (localeFile.exists()) {
+                        org.bukkit.configuration.file.YamlConfiguration localeMsgs = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(localeFile);
+                        s = localeMsgs.getString(path);
+                    }
+                }
+            }
+            // Fall back to default messages
+            if (s == null && messages != null) {
+                s = messages.getString(path);
+            }
             if (s == null) s = path;
             return ChatColor.translateAlternateColorCodes('&', s);
         } catch (Throwable t) {
@@ -1183,22 +818,32 @@ public class FirstLogin extends JavaPlugin {
     }
 
     private void extractBundledLocaleFiles() {
-        // Minimal no-op to avoid build failure; messages.yml is already copied on first run.
-        // If additional locale files are bundled (messages_*.yml), server admins can copy them manually.
-        // A fuller implementation could iterate plugin JAR resources and save them into data folder.
+        // Save known bundled locale files if missing.
+        try {
+            java.util.List<String> locales = java.util.Arrays.asList(
+                    "messages_en_us.yml"
+            );
+            for (String res : locales) {
+                try {
+                    java.io.File out = new java.io.File(getDataFolder(), res);
+                    if (!out.exists()) {
+                        saveResource(res, false);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
     }
 
-    private OfflinePlayer getOfflineByName(String name) {
-        if (name == null) return null;
-        Player online = Bukkit.getPlayerExact(name);
-        if (online != null) return online;
-        for (OfflinePlayer op : Bukkit.getOfflinePlayers()) {
-            if (op.getName() != null && op.getName().equalsIgnoreCase(name)) return op;
-        }
-        return null;
+    
+
+    // Public utility to get versioned flag name - centralizes logic for all classes
+    public String versionedFlagName(String base) {
+        int v = getRulesVersion();
+        return v <= 1 ? base : base + "_v" + v;
     }
 
-    private String versionedFlagName(String base) {
+    // Get current rules version from config
+    public int getRulesVersion() {
         int v = 1;
         try {
             // Support both camelCase and lower-case keys
@@ -1207,8 +852,10 @@ public class FirstLogin extends JavaPlugin {
             } else if (config.contains("welcomegui.rulesversion")) {
                 v = Math.max(1, config.getInt("welcomegui.rulesversion"));
             }
-        } catch (Throwable ignored) {}
-        return v <= 1 ? base : base + "_v" + v;
+        } catch (Throwable t) {
+            getLogger().fine("Error reading rulesVersion: " + t.getMessage());
+        }
+        return v;
     }
 
     public boolean hasAcceptedRules(Player player) {
@@ -1260,15 +907,21 @@ public class FirstLogin extends JavaPlugin {
     }
 
     // Public getters for telemetry counters used by PlaceholderAPI
-    public int getGuiOpensToday() { return metricsGuiOpensToday; }
-    public int getRulesAcceptedToday() { return metricsRulesAcceptedToday; }
-    public int getItemClicksToday(String key) { return telemetryItemClicksToday.getOrDefault(key, 0); }
+    public int getGuiOpensToday() { return telemetryService != null ? telemetryService.getGuiOpensToday() : 0; }
+    public int getRulesAcceptedToday() { return telemetryService != null ? telemetryService.getRulesAcceptedToday() : 0; }
+    public int getItemClicksToday(String key) { return telemetryService != null ? telemetryService.getItemClicksToday(key) : 0; }
+    public int getTotalItemClicksToday() {
+        if (telemetryService == null) return 0;
+        int total = 0;
+        for (int v : telemetryService.getItemClicksTodaySnapshot().values()) total += v;
+        return total;
+    }
 
     // Public accessor for last telemetry reset timestamp (epoch millis), 0 if never
-    public long getTelemetryLastResetTs() { return telemetryLastResetTs; }
+    public long getTelemetryLastResetTs() { return telemetryService != null ? telemetryService.getTelemetryLastResetTs() : 0L; }
 
     // Public accessor for next scheduled telemetry reset timestamp (epoch millis), 0 if disabled/unknown
-    public long getTelemetryNextResetTs() { return telemetryNextResetTs; }
+    public long getTelemetryNextResetTs() { return telemetryService != null ? telemetryService.getTelemetryNextResetTs() : 0L; }
 
     // Compute 1-based join order number based on firstPlayed timestamps across known players
     public int joinNumberOf(org.bukkit.OfflinePlayer target) {
@@ -1302,11 +955,14 @@ public class FirstLogin extends JavaPlugin {
     }
 
     // Apply placeholders and convert MiniMessage -> legacy '§' string, also honoring & codes and hex colors.
+    // Respects formatting.useMiniMessage config option.
     public String toLegacyString(String input, Player player, int totalPlayersToDate) {
         if (input == null) return "";
         try {
             String with = applyPlaceholders(input, player, totalPlayersToDate);
-            if (mm != null) {
+            // Check if MiniMessage parsing is enabled
+            boolean useMiniMessage = config.getBoolean("formatting.useMiniMessage", true);
+            if (useMiniMessage && mm != null) {
                 Component c = mm.deserialize(with);
                 String legacy = LegacyComponentSerializer.legacySection().serialize(c);
                 return colorizeWithHex(legacy);
@@ -1355,22 +1011,126 @@ public class FirstLogin extends JavaPlugin {
     }
 
     // Placeholder application with optional PlaceholderAPI resolution when available.
+    // Respects formatting.usePlaceholders config option.
     public String applyPlaceholders(String input, Player player, int totalPlayersToDate) {
         if (input == null) return "";
         String out = input;
         try {
-            String name = player != null ? player.getName() : "player";
-            out = out.replace("{player}", name)
-                     .replace("{name}", name)
-                     .replace("%player_name%", name)
-                     .replace("{totalPlayers}", Integer.toString(totalPlayersToDate))
-                     .replace("{players_to_date}", Integer.toString(totalPlayersToDate));
-            // Resolve PAPI placeholders if plugin present
+            // Check if built-in placeholders are enabled
+            boolean usePlaceholders = config.getBoolean("formatting.usePlaceholders", true);
+            if (usePlaceholders) {
+                String name = player != null ? player.getName() : "player";
+                int online = Bukkit.getOnlinePlayers().size();
+                String owner = config.getString("World.Owner", "default");
+                
+                // Basic placeholders
+                out = out.replace("{player}", name)
+                         .replace("{name}", name)
+                         .replace("%player_name%", name)
+                         .replace("{online}", Integer.toString(online))
+                         .replace("{total}", Integer.toString(totalPlayersToDate))
+                         .replace("{totalPlayers}", Integer.toString(totalPlayersToDate))
+                         .replace("{players_to_date}", Integer.toString(totalPlayersToDate))
+                         .replace("{owner}", owner);
+                
+                // Player state placeholders (only if player is available)
+                if (player != null) {
+                    // Health and food
+                    out = out.replace("{health}", String.format("%.1f", player.getHealth()))
+                             .replace("{max_health}", String.format("%.1f", player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getValue()))
+                             .replace("{food}", Integer.toString(player.getFoodLevel()))
+                             .replace("{level}", Integer.toString(player.getLevel()))
+                             .replace("{xp}", Integer.toString((int)(player.getExp() * 100)));
+                    
+                    // Location
+                    out = out.replace("{world}", player.getWorld().getName())
+                             .replace("{x}", Integer.toString(player.getLocation().getBlockX()))
+                             .replace("{y}", Integer.toString(player.getLocation().getBlockY()))
+                             .replace("{z}", Integer.toString(player.getLocation().getBlockZ()));
+                    
+                    // Gamemode
+                    out = out.replace("{gamemode}", player.getGameMode().name().toLowerCase(java.util.Locale.ROOT));
+                    
+                    // Time-based
+                    out = out.replace("{time}", player.getWorld().getTime() < 12000 ? "day" : "night")
+                             .replace("{weather}", player.getWorld().hasStorm() ? (player.getWorld().isThundering() ? "storm" : "rain") : "clear");
+                    
+                    // Playtime (in hours)
+                    long playedTicks = player.getStatistic(org.bukkit.Statistic.PLAY_ONE_MINUTE);
+                    long playedHours = playedTicks / 20 / 3600;
+                    long playedMinutes = (playedTicks / 20 / 60) % 60;
+                    out = out.replace("{playtime_hours}", Long.toString(playedHours))
+                             .replace("{playtime}", playedHours + "h " + playedMinutes + "m");
+                    
+                    // UUID (short form)
+                    out = out.replace("{uuid}", player.getUniqueId().toString())
+                             .replace("{uuid_short}", player.getUniqueId().toString().substring(0, 8));
+                    
+                    // Ping (if available)
+                    try {
+                        out = out.replace("{ping}", Integer.toString(player.getPing()));
+                    } catch (Throwable ignored) {
+                        out = out.replace("{ping}", "?");
+                    }
+                    
+                    // Progress bars - {bar_health}, {bar_food}, {bar_xp}, {bar_level_10} (10 chars wide)
+                    out = out.replace("{bar_health}", generateProgressBar(player.getHealth(), player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getValue(), 10, "&c", "&7"))
+                             .replace("{bar_food}", generateProgressBar(player.getFoodLevel(), 20, 10, "&6", "&7"))
+                             .replace("{bar_xp}", generateProgressBar(player.getExp() * 100, 100, 10, "&a", "&7"));
+                    
+                    // Custom progress bar: {progress:current:max:width:filledColor:emptyColor}
+                    out = resolveCustomProgressBars(out);
+                }
+            }
+            // Resolve PAPI placeholders if plugin present and enabled
             if (papiAvailable && player != null) {
-                try { out = PlaceholderAPI.setPlaceholders(player, out); } catch (Throwable ignored) {}
+                try {
+                    // Attempt direct PlaceholderAPI resolution
+                    out = me.clip.placeholderapi.PlaceholderAPI.setPlaceholders(player, out);
+                } catch (Throwable ignored) {
+                    // Best-effort: keep the unprocessed string if PAPI call fails
+                }
             }
         } catch (Throwable ignored) {}
         return out;
+    }
+    
+    // Generate a visual progress bar string
+    private String generateProgressBar(double current, double max, int width, String filledColor, String emptyColor) {
+        if (max <= 0) max = 1;
+        double ratio = Math.max(0, Math.min(1, current / max));
+        int filled = (int) Math.round(ratio * width);
+        int empty = width - filled;
+        StringBuilder sb = new StringBuilder();
+        sb.append(filledColor);
+        for (int i = 0; i < filled; i++) sb.append("█");
+        sb.append(emptyColor);
+        for (int i = 0; i < empty; i++) sb.append("█");
+        return sb.toString();
+    }
+    
+    // Resolve custom progress bars: {progress:current:max:width:filledColor:emptyColor}
+    private String resolveCustomProgressBars(String input) {
+        if (input == null || !input.contains("{progress:")) return input;
+        String out = input;
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\{progress:(\\d+(?:\\.\\d+)?):(\\d+(?:\\.\\d+)?):(\\d+):([^:]+):([^}]+)\\}");
+        java.util.regex.Matcher matcher = pattern.matcher(out);
+        StringBuffer sb = new StringBuffer();
+        while (matcher.find()) {
+            try {
+                double current = Double.parseDouble(matcher.group(1));
+                double max = Double.parseDouble(matcher.group(2));
+                int width = Integer.parseInt(matcher.group(3));
+                String filledColor = matcher.group(4);
+                String emptyColor = matcher.group(5);
+                String bar = generateProgressBar(current, max, Math.min(width, 50), filledColor, emptyColor);
+                matcher.appendReplacement(sb, bar.replace("$", "\\$"));
+            } catch (Throwable t) {
+                matcher.appendReplacement(sb, "");
+            }
+        }
+        matcher.appendTail(sb);
+        return sb.toString();
     }
 
     private void refreshPlayersToDate() {
@@ -1395,35 +1155,224 @@ public class FirstLogin extends JavaPlugin {
         }
     }
 
-    // Minimal join listener to handle GUI reopen behavior
-    public static class JoinListener implements Listener {
-        private final FirstLogin plugin;
-        public JoinListener(FirstLogin plugin) { this.plugin = plugin; }
+    
+    // Service getters for command executors and listeners
+    public TelemetryService getTelemetryService() { return telemetryService; }
+    public PlayersStore getPlayersStore() { return playersStore; }
 
-        @EventHandler
-        public void onJoin(PlayerJoinEvent e) {
-            Player p = e.getPlayer();
-            try {
-                // Ensure first_join timestamp is recorded once
-                try {
-                    String fjKey = "timestamps." + p.getUniqueId() + ".first_join";
-                    long ts = players.getLong(fjKey, 0L);
-                    if (ts <= 0L) {
-                        long fp = p.getFirstPlayed();
-                        players.set(fjKey, fp > 0 ? fp : System.currentTimeMillis());
-                        plugin.queuePlayersSave();
-                    }
-                } catch (Throwable ignored) {}
+    // Determine the rules flag key for the current version
+    private String rulesFlagKey() {
+        int v = 1;
+        try {
+            if (config.contains("welcomeGui.rulesVersion")) {
+                v = Math.max(1, config.getInt("welcomeGui.rulesVersion"));
+            } else if (config.contains("welcomegui.rulesversion")) {
+                v = Math.max(1, config.getInt("welcomegui.rulesversion"));
+            }
+        } catch (Throwable ignored) {}
+        return v <= 1 ? "rules" : ("rules_v" + v);
+    }
 
-                // Auto-accept rules if player has permission
-                try { plugin.autoAcceptIfPerm(p); } catch (Throwable ignored) {}
-
-                boolean reopen = plugin.getConfig().getBoolean("welcomeGui.reopenOnJoinUntilAccepted", false);
-                if (reopen && plugin.welcomeGui != null && plugin.welcomeGui.isEnabled() && !plugin.hasAcceptedRules(p)) {
-                    long delay = plugin.getConfig().getLong("welcomeGui.openDelayTicks", 40L);
-                    Bukkit.getScheduler().runTaskLater(plugin, () -> plugin.welcomeGui.openFor(p, 1), Math.max(0L, delay));
-                }
-            } catch (Throwable ignored) {}
+    // Count players who have accepted current rules version (cached for performance)
+    public int getRulesAcceptedCount() {
+        long now = System.currentTimeMillis();
+        if (cachedRulesAcceptedCount >= 0 && (now - cachedRulesCountsAt) <= RULES_COUNTS_TTL_MS) {
+            return cachedRulesAcceptedCount;
         }
+        // Kick async refresh if not already computing
+        if (!computingRulesCounts) {
+            try { Bukkit.getScheduler().runTaskAsynchronously(this, this::refreshRulesCounts); } catch (Throwable ignored) {}
+        }
+        return Math.max(0, cachedRulesAcceptedCount);
+    }
+
+    // Count players who have NOT accepted current rules version (cached for performance)
+    public int getRulesPendingCount() {
+        long now = System.currentTimeMillis();
+        if (cachedRulesPendingCount >= 0 && (now - cachedRulesCountsAt) <= RULES_COUNTS_TTL_MS) {
+            return cachedRulesPendingCount;
+        }
+        // Kick async refresh if not already computing
+        if (!computingRulesCounts) {
+            try { Bukkit.getScheduler().runTaskAsynchronously(this, this::refreshRulesCounts); } catch (Throwable ignored) {}
+        }
+        return Math.max(0, cachedRulesPendingCount);
+    }
+
+    // Refresh rules counts asynchronously
+    private void refreshRulesCounts() {
+        if (computingRulesCounts) return;
+        computingRulesCounts = true;
+        try {
+            String rk = rulesFlagKey();
+            int accepted = 0;
+            int pending = 0;
+            for (org.bukkit.OfflinePlayer op : org.bukkit.Bukkit.getOfflinePlayers()) {
+                java.util.UUID u = op.getUniqueId();
+                if (players.getBoolean("flags." + u + "." + rk, false)) {
+                    accepted++;
+                } else {
+                    pending++;
+                }
+            }
+            cachedRulesAcceptedCount = accepted;
+            cachedRulesPendingCount = pending;
+            cachedRulesCountsAt = System.currentTimeMillis();
+        } catch (Throwable ignored) {
+        } finally {
+            computingRulesCounts = false;
+        }
+    }
+
+    // Compute welcome GUI open delay with coordination role extra delay
+    public long computeWelcomeOpenDelayTicks() {
+        long baseDelay;
+        try { baseDelay = getConfig().getLong("welcomeGui.openDelayTicks", 40L); }
+        catch (Throwable ignored) { baseDelay = 40L; }
+        long extra = 0L;
+        try { extra = (coordinationService != null ? coordinationService.extraDelayTicks() : 0L); } catch (Throwable ignored) {}
+        long total = baseDelay + Math.max(0L, extra);
+        return Math.max(0L, total);
+    }
+
+    // Check if we can proceed after coordination claim logic
+    public boolean shouldProceedAfterCoordination(Player p) {
+        try { return coordinationService != null ? coordinationService.tryClaimNow(p) : true; }
+        catch (Throwable ignored) { return true; }
+    }
+
+    // Trigger optional join-time extras (particles, guide, bossbar, title, sound) with coordination gating where applicable
+    public void playJoinExtras(Player p) {
+        // First join visuals: title
+        try {
+            if (config.getBoolean("firstJoinVisuals.title.enabled", false)) {
+                String titleText = config.getString("firstJoinVisuals.title.title", "<green>Welcome, {player}!");
+                String subtitleText = config.getString("firstJoinVisuals.title.subtitle", "<gray>Enjoy your stay.");
+                int fadeIn = config.getInt("firstJoinVisuals.title.fadeIn", 10);
+                int stay = config.getInt("firstJoinVisuals.title.stay", 60);
+                int fadeOut = config.getInt("firstJoinVisuals.title.fadeOut", 10);
+                
+                // Apply placeholders
+                titleText = applyPlaceholders(titleText, p, playersToDate());
+                subtitleText = applyPlaceholders(subtitleText, p, playersToDate());
+                
+                // Send title using Adventure
+                try {
+                    net.kyori.adventure.title.Title.Times times = net.kyori.adventure.title.Title.Times.times(
+                        java.time.Duration.ofMillis(fadeIn * 50L),
+                        java.time.Duration.ofMillis(stay * 50L),
+                        java.time.Duration.ofMillis(fadeOut * 50L)
+                    );
+                    net.kyori.adventure.text.Component titleComp = mm.deserialize(titleText);
+                    net.kyori.adventure.text.Component subtitleComp = mm.deserialize(subtitleText);
+                    net.kyori.adventure.title.Title title = net.kyori.adventure.title.Title.title(titleComp, subtitleComp, times);
+                    adventure.player(p).showTitle(title);
+                } catch (Throwable t) {
+                    // Fallback to legacy title
+                    p.sendTitle(
+                        org.bukkit.ChatColor.translateAlternateColorCodes('&', titleText.replace("<green>", "&a").replace("<gray>", "&7")),
+                        org.bukkit.ChatColor.translateAlternateColorCodes('&', subtitleText.replace("<green>", "&a").replace("<gray>", "&7")),
+                        fadeIn, stay, fadeOut
+                    );
+                }
+            }
+        } catch (Throwable ignored) {}
+        
+        // First join visuals: actionbar (one-time message, different from ActionBarManager's repeating)
+        try {
+            if (config.getBoolean("firstJoinVisuals.actionbar.enabled", false)) {
+                String msg = config.getString("firstJoinVisuals.actionbar.message", "<yellow>First time here!");
+                msg = applyPlaceholders(msg, p, playersToDate());
+                try {
+                    adventure.player(p).sendActionBar(mm.deserialize(msg));
+                } catch (Throwable t) {
+                    p.spigot().sendMessage(net.md_5.bungee.api.ChatMessageType.ACTION_BAR, 
+                        net.md_5.bungee.api.chat.TextComponent.fromLegacyText(
+                            org.bukkit.ChatColor.translateAlternateColorCodes('&', msg.replace("<yellow>", "&e"))
+                        ));
+                }
+            }
+        } catch (Throwable ignored) {}
+        
+        // First join visuals: sound
+        try {
+            if (config.getBoolean("firstJoinVisuals.sound.enabled", false)) {
+                String soundName = config.getString("firstJoinVisuals.sound.name", "ENTITY_PLAYER_LEVELUP");
+                float volume = (float) config.getDouble("firstJoinVisuals.sound.volume", 1.0);
+                float pitch = (float) config.getDouble("firstJoinVisuals.sound.pitch", 1.0);
+                try {
+                    org.bukkit.Sound sound = org.bukkit.Sound.valueOf(soundName);
+                    p.playSound(p.getLocation(), sound, volume, pitch);
+                } catch (IllegalArgumentException e) {
+                    getLogger().warning("[Config] Invalid firstJoinVisuals.sound.name: " + soundName);
+                }
+            }
+        } catch (Throwable ignored) {}
+        
+        // Particles
+        try {
+            if (particleManager != null && particleManager.isEnabled()) {
+                particleManager.playFirstJoinEffect(p);
+            }
+        } catch (Throwable ignored) {}
+        try {
+            if (guideManager != null && guideManager.isEnabled()) {
+                guideManager.spawnGuideForPlayer(p);
+            }
+        } catch (Throwable ignored) {}
+        try {
+            if (bossBarManager != null && bossBarManager.isEnabled()) {
+                long extra = 0L;
+                try { extra = Math.max(0L, (coordinationService != null ? coordinationService.extraDelayTicks() : 0L)); } catch (Throwable ignored) {}
+                long delay = extra;
+                Bukkit.getScheduler().runTaskLater(this, () -> {
+                    if (shouldProceedAfterCoordination(p)) {
+                        try { bossBarManager.showWelcomeBar(p); } catch (Throwable ignored) {}
+                    }
+                }, delay);
+            }
+        } catch (Throwable ignored) {}
+        // Action bar welcome
+        try {
+            if (actionBarManager != null && actionBarManager.isEnabled()) {
+                actionBarManager.showWelcome(p);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    // Clean up player resources on quit (bossbars, guides, etc.)
+    public void cleanupPlayerResources(Player p) {
+        if (p == null) return;
+        // Hide any active bossbar
+        try {
+            if (bossBarManager != null) {
+                bossBarManager.hide(p);
+            }
+        } catch (Throwable ignored) {}
+        // Remove any active guide
+        try {
+            if (guideManager != null) {
+                guideManager.removeGuideForPlayer(p);
+            }
+        } catch (Throwable ignored) {}
+        // Hide any active action bar
+        try {
+            if (actionBarManager != null) {
+                actionBarManager.hide(p);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    // Expose managers for PAPI placeholders
+    public boolean hasActiveGuide(Player p) {
+        return guideManager != null && guideManager.hasActiveGuide(p);
+    }
+
+    public boolean hasBossBarActive(Player p) {
+        return bossBarManager != null && bossBarManager.isEnabled();
+    }
+
+    public boolean hasActiveActionBar(Player p) {
+        return actionBarManager != null && actionBarManager.hasActiveActionBar(p);
     }
 }

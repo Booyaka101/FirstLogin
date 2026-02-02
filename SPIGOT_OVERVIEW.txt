@@ -2,7 +2,7 @@
 [B][SIZE=6]FirstLogin[/SIZE][/B]
 A welcoming first-join experience with titles, action bar, sounds, and clean MiniMessage formatting (with legacy & colors supported).
 
-[SIZE=4][B]Version:[/B] 1.7.3-SNAPSHOT  •  [B]Minecraft:[/B] 1.20+  •  [B]Java:[/B] 17  •  [B]Author:[/B] BooPug Studios[/SIZE]
+[SIZE=4][B]Version:[/B] 1.8.0  •  [B]Minecraft:[/B] 1.20+  •  [B]Java:[/B] 17  •  [B]Author:[/B] BooPug Studios[/SIZE]
 [/CENTER]
 
 [B]Why FirstLogin?[/B]
@@ -25,6 +25,8 @@ Give new players a warm welcome and a tasteful first impression. FirstLogin is s
 [*] In-plugin telemetry counters (today): GUI opens, rules accepted
 [*] Asynchronous player data saving (non-blocking players.yml writes)
 [*] bStats metrics (configurable/opt‑out)
+[*)] Experimental visuals (disabled by default; opt‑in): Particle effects and Animated Guide
+[*)] Toggle via config (`particles.enabled`, `animatedGuide.enabled`) and apply at runtime with `/firstlogin reload`
 [/LIST]
 
 [B]Commands[/B]
@@ -97,10 +99,11 @@ metrics:
 [*]{owner} – value from config: World.Owner
 [/LIST]
 If PlaceholderAPI is installed and enabled in config, its placeholders will also be resolved in messages.
+Note: The FirstLogin PlaceholderAPI expansion can be enabled/disabled via `placeholderapi.enabled`. Using `/firstlogin reload` will dynamically register or unregister the expansion at runtime.
 
 [B]Installation[/B]
 [LIST=1]
-[*] Drop [I]firstlogin-1.7.3-SNAPSHOT.jar[/I] into your [I]plugins/[/I] folder
+[*] Drop [I]firstlogin-1.8.0.jar[/I] into your [I]plugins/[/I] folder
 [*] Start the server to generate configs (config.yml, messages.yml, players.yml)
 [*] Customize your messages and visuals
 [*] Restart the server (recommended over /reload)
@@ -115,19 +118,19 @@ If PlaceholderAPI is installed and enabled in config, its placeholders will also
 [B]bStats[/B]
 Anonymous usage statistics help guide development. You can opt out globally via [I]plugins/bStats/config.yml[/I] or disable this plugin’s metrics in [I]config.yml[/I].
 
-[B]What’s New in 1.7.3 (Unreleased)[/B]
+[B]What's New in 1.8.0[/B]
 [LIST]
-[*] Daily telemetry reset scheduling with persisted last reset timestamp (shown in /firstlogin metrics)
-[*] New PlaceholderAPI: [ICODE]%firstlogin_metrics_reset_date%[/ICODE] (formatted by formatting.datePattern)
-[*] Configurable async save debounce for players.yml: [ICODE]asyncSave.players.debounceTicks[/ICODE]
-[*] Debug toggles for saves and telemetry: [ICODE]debug.saves[/ICODE], [ICODE]debug.telemetry[/ICODE]
-[*] Track and expose next scheduled telemetry reset time
-[*] /firstlogin metrics now shows the next reset time
-[*] New PAPI placeholders: [ICODE]%firstlogin_metrics_last_reset_ts%[/ICODE], [ICODE]%firstlogin_metrics_next_reset_date%[/ICODE], [ICODE]%firstlogin_metrics_next_reset_ts%[/ICODE],
-    [ICODE]%firstlogin_metrics_next_reset_in_seconds%[/ICODE], [ICODE]%firstlogin_metrics_next_reset_in_minutes%[/ICODE], [ICODE]%firstlogin_metrics_next_reset_in_hours%[/ICODE],
-    [ICODE]%firstlogin_metrics_next_reset_pretty%[/ICODE], [ICODE]%firstlogin_metrics_last_reset_pretty%[/ICODE]
-[*] Runtime telemetry reset toggles via /firstlogin set: [ICODE]telemetry.reset.enabled[/ICODE] (bool), [ICODE]telemetry.reset.time[/ICODE] (HH:mm; reschedules immediately)
-[*] New metrics subcommands: [ICODE]when[/ICODE] (pretty last/next durations) and [ICODE]now[/ICODE] (reset immediately + reschedule)
+[*] [B]29 GUI Action Types[/B]: message, command, url, sound, give, teleport, effect, title, actionbar, broadcast, heal, feed, gamemode, fly, firework, particle, bossbar, velocity, cleareffects, sudo, op, random, delay, if, chance, repeat
+[*] [B]13 Requirement Types[/B]: flag, !flag, perm, !perm, level, health, food, gamemode, world, online, time, weather, cooldown, played
+[*] [B]10 Item Display Options[/B]: amount, glow, customModelData, hideAttributes, hideFlags, skullOwner, color, enchantments, potionColor, potionEffects
+[*] [B]15+ New Placeholders[/B]: {health}, {food}, {level}, {xp}, {world}, {x}, {y}, {z}, {gamemode}, {time}, {weather}, {playtime}, {ping}, {uuid_short}
+[*] [B]Progress Bars[/B]: {bar_health}, {bar_food}, {bar_xp}, custom {progress:...} generator
+[*] [B]Login Streak Tracking[/B]: consecutive days played, max streak, milestone messages (7, 14, 30, 60, 90, 100, 365 days)
+[*] [B]Anniversary Detection[/B]: automatic celebration messages on join anniversaries
+[*] [B]Custom Events[/B]: FirstJoinEvent and ReturningPlayerEvent for other plugins to hook into
+[*] [B]Discord/Slack Webhooks[/B]: notifications for first joins and returning players
+[*] [B]Referral System[/B]: track who invited new players
+[*] [B]Player Notes[/B]: admin notes system for players
 [/LIST]
 
 [B]What’s New in 1.7.2[/B]

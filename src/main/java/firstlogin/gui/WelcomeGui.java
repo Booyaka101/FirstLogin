@@ -23,13 +23,14 @@ import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class WelcomeGui implements Listener {
     private final FirstLogin plugin;
 
-    // Track actions per opened GUI by player UUID and slot
-    private final Map<UUID, Map<Integer, GuiAction>> openActions = new HashMap<>();
+    // Track actions per opened GUI by player UUID and slot (thread-safe)
+    private final Map<UUID, Map<Integer, GuiAction>> openActions = new ConcurrentHashMap<>();
 
     public WelcomeGui(FirstLogin plugin) {
         this.plugin = plugin;
@@ -123,7 +124,8 @@ public class WelcomeGui implements Listener {
                 }
 
                 // Optionally hide item if player lacks permission
-                if (permission != null && !permission.isEmpty() && !player.hasPermission(permission) && hideIfNoPerm) {
+                boolean lacksPerm = permission != null && !permission.isEmpty() && !player.hasPermission(permission);
+                if (lacksPerm && hideIfNoPerm) {
                     continue;
                 }
 
@@ -142,7 +144,23 @@ public class WelcomeGui implements Listener {
                     }
                 }
 
-                ItemStack item = new ItemStack(mat);
+                // If lacking permission but not hidden, optionally render a disabled variant
+                if (lacksPerm) {
+                    ConfigurationSection dis = sec.getConfigurationSection("disabledVariant");
+                    if (dis != null) {
+                        String dMatName = dis.getString("material", materialName);
+                        Material dMat = Material.matchMaterial(dMatName == null ? materialName : dMatName.toUpperCase(Locale.ROOT));
+                        if (dMat != null) mat = dMat;
+                        String dName = resolveLocaleString(player, dis, "name", name);
+                        if (dName != null) name = dName;
+                        java.util.List<String> dLore = resolveLocaleList(player, dis, "lore");
+                        if (dLore != null && !dLore.isEmpty()) lore = dLore;
+                    }
+                }
+
+                // Item amount (default 1)
+                int amount = sec.getInt("amount", 1);
+                ItemStack item = new ItemStack(mat, Math.max(1, Math.min(64, amount)));
                 ItemMeta meta = item.getItemMeta();
                 if (meta != null) {
                     final int total = plugin.playersToDate();
@@ -153,6 +171,115 @@ public class WelcomeGui implements Listener {
                                 .collect(Collectors.toList());
                         meta.setLore(lines);
                     }
+                    
+                    // Glow effect (enchantment glint without visible enchantment)
+                    if (sec.getBoolean("glow", false)) {
+                        meta.addEnchant(org.bukkit.enchantments.Enchantment.DURABILITY, 1, true);
+                        meta.addItemFlags(org.bukkit.inventory.ItemFlag.HIDE_ENCHANTS);
+                    }
+                    
+                    // Custom model data for resource packs
+                    int customModelData = sec.getInt("customModelData", 0);
+                    if (customModelData > 0) {
+                        meta.setCustomModelData(customModelData);
+                    }
+                    
+                    // Hide attributes (cleaner look)
+                    if (sec.getBoolean("hideAttributes", false)) {
+                        meta.addItemFlags(org.bukkit.inventory.ItemFlag.HIDE_ATTRIBUTES);
+                    }
+                    
+                    // Hide additional info
+                    if (sec.getBoolean("hideFlags", false)) {
+                        meta.addItemFlags(
+                            org.bukkit.inventory.ItemFlag.HIDE_ENCHANTS,
+                            org.bukkit.inventory.ItemFlag.HIDE_ATTRIBUTES,
+                            org.bukkit.inventory.ItemFlag.HIDE_UNBREAKABLE,
+                            org.bukkit.inventory.ItemFlag.HIDE_DESTROYS,
+                            org.bukkit.inventory.ItemFlag.HIDE_PLACED_ON,
+                            org.bukkit.inventory.ItemFlag.HIDE_POTION_EFFECTS
+                        );
+                    }
+                    
+                    // Skull owner for player heads
+                    if (mat == Material.PLAYER_HEAD && meta instanceof org.bukkit.inventory.meta.SkullMeta) {
+                        String skullOwner = sec.getString("skullOwner", null);
+                        if (skullOwner != null && !skullOwner.isEmpty()) {
+                            String resolved = plugin.applyPlaceholders(skullOwner, player, total);
+                            ((org.bukkit.inventory.meta.SkullMeta) meta).setOwner(resolved);
+                        }
+                    }
+                    
+                    // Leather armor color
+                    if (meta instanceof org.bukkit.inventory.meta.LeatherArmorMeta) {
+                        String colorStr = sec.getString("color", null);
+                        if (colorStr != null && !colorStr.isEmpty()) {
+                            try {
+                                org.bukkit.Color color;
+                                if (colorStr.startsWith("#")) {
+                                    int rgb = Integer.parseInt(colorStr.substring(1), 16);
+                                    color = org.bukkit.Color.fromRGB(rgb);
+                                } else {
+                                    // Try named color
+                                    java.lang.reflect.Field f = org.bukkit.Color.class.getField(colorStr.toUpperCase(Locale.ROOT));
+                                    color = (org.bukkit.Color) f.get(null);
+                                }
+                                ((org.bukkit.inventory.meta.LeatherArmorMeta) meta).setColor(color);
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                    
+                    // Enchantments: list of "ENCHANT_NAME:level" or just "ENCHANT_NAME"
+                    List<String> enchants = sec.getStringList("enchantments");
+                    if (enchants != null && !enchants.isEmpty()) {
+                        for (String e : enchants) {
+                            try {
+                                String[] parts = e.split(":");
+                                String enchName = parts[0].trim().toUpperCase(Locale.ROOT);
+                                int level = parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 1;
+                                org.bukkit.enchantments.Enchantment ench = org.bukkit.enchantments.Enchantment.getByKey(
+                                    org.bukkit.NamespacedKey.minecraft(enchName.toLowerCase(Locale.ROOT)));
+                                if (ench != null) {
+                                    meta.addEnchant(ench, level, true);
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                    
+                    // Potion color for potion items
+                    if (meta instanceof org.bukkit.inventory.meta.PotionMeta) {
+                        String potionColor = sec.getString("potionColor", null);
+                        if (potionColor != null && !potionColor.isEmpty()) {
+                            try {
+                                org.bukkit.Color color;
+                                if (potionColor.startsWith("#")) {
+                                    int rgb = Integer.parseInt(potionColor.substring(1), 16);
+                                    color = org.bukkit.Color.fromRGB(rgb);
+                                } else {
+                                    java.lang.reflect.Field f = org.bukkit.Color.class.getField(potionColor.toUpperCase(Locale.ROOT));
+                                    color = (org.bukkit.Color) f.get(null);
+                                }
+                                ((org.bukkit.inventory.meta.PotionMeta) meta).setColor(color);
+                            } catch (Throwable ignored) {}
+                        }
+                        // Potion effects: list of "EFFECT_TYPE:duration:amplifier"
+                        List<String> potionEffects = sec.getStringList("potionEffects");
+                        if (potionEffects != null && !potionEffects.isEmpty()) {
+                            for (String pe : potionEffects) {
+                                try {
+                                    String[] parts = pe.split(":");
+                                    org.bukkit.potion.PotionEffectType type = org.bukkit.potion.PotionEffectType.getByName(parts[0].trim().toUpperCase(Locale.ROOT));
+                                    int duration = parts.length > 1 ? Integer.parseInt(parts[1].trim()) * 20 : 600;
+                                    int amplifier = parts.length > 2 ? Integer.parseInt(parts[2].trim()) : 0;
+                                    if (type != null) {
+                                        ((org.bukkit.inventory.meta.PotionMeta) meta).addCustomEffect(
+                                            new org.bukkit.potion.PotionEffect(type, duration, amplifier), true);
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        }
+                    }
+                    
                     item.setItemMeta(meta);
                 }
                 inv.setItem(slot, item);
@@ -207,6 +334,8 @@ public class WelcomeGui implements Listener {
 
         openActions.put(player.getUniqueId(), actions);
         player.openInventory(inv);
+        // Play open sound if configured
+        playGuiSound(player, "open");
         // Telemetry: record GUI open
         try { plugin.recordGuiOpen(); } catch (Throwable ignored) {}
         String opened = pluginMsg(player, "messages.gui.opened");
@@ -401,6 +530,8 @@ public class WelcomeGui implements Listener {
             firstlogin.FirstLogin.players.set("timestamps." + u + ".rules_accepted", System.currentTimeMillis());
             persist();
         } catch (Throwable ignored) {}
+        // Play rules accepted sound
+        playGuiSound(player, "rulesAccepted");
         // Telemetry: record rules acceptance
         try { plugin.recordRulesAccepted(); } catch (Throwable ignored) {}
         String ok = pluginMsg(player, "messages.gui.accepted");
@@ -506,6 +637,8 @@ public class WelcomeGui implements Listener {
             if (top != null && top.getHolder() instanceof WelcomeHolder) return; // still our GUI
 
             openActions.remove(uuid);
+            // Play close sound if configured
+            playGuiSound(p, "close");
             debugGui(p, "Closed Welcome GUI");
 
             if (block && !getFlag(uuid, "rules")) {
@@ -696,6 +829,354 @@ public class WelcomeGui implements Listener {
                         String label = a.urlLabel == null ? url : plugin.toLegacyString(a.urlLabel, player, plugin.playersToDate());
                         String msg = pluginMsg(player, "messages.gui.clickUrl");
                         if (!msg.isEmpty()) sendTo(player, msg.replace("{label}", label).replace("{url}", url));
+                    } else if (s.startsWith("sound:")) {
+                        // Play a sound: sound:SOUND_NAME or sound:SOUND_NAME:volume:pitch
+                        String[] parts = s.substring("sound:".length()).split(":");
+                        String soundName = parts[0].trim().toUpperCase(Locale.ROOT);
+                        float vol = parts.length > 1 ? Float.parseFloat(parts[1].trim()) : 1.0f;
+                        float pitch = parts.length > 2 ? Float.parseFloat(parts[2].trim()) : 1.0f;
+                        try {
+                            org.bukkit.Sound sound = org.bukkit.Sound.valueOf(soundName);
+                            player.playSound(player.getLocation(), sound, vol, pitch);
+                        } catch (IllegalArgumentException e) {
+                            plugin.getLogger().warning("[GUI] Invalid sound: " + soundName);
+                        }
+                    } else if (s.startsWith("teleport:")) {
+                        // Teleport player: teleport:world:x:y:z or teleport:x:y:z (same world)
+                        String[] parts = s.substring("teleport:".length()).split(":");
+                        org.bukkit.Location loc;
+                        if (parts.length >= 4) {
+                            // world:x:y:z
+                            org.bukkit.World w = Bukkit.getWorld(parts[0].trim());
+                            if (w == null) w = player.getWorld();
+                            loc = new org.bukkit.Location(w, 
+                                Double.parseDouble(parts[1].trim()),
+                                Double.parseDouble(parts[2].trim()),
+                                Double.parseDouble(parts[3].trim()));
+                            if (parts.length >= 6) {
+                                loc.setYaw(Float.parseFloat(parts[4].trim()));
+                                loc.setPitch(Float.parseFloat(parts[5].trim()));
+                            }
+                        } else if (parts.length >= 3) {
+                            // x:y:z (same world)
+                            loc = new org.bukkit.Location(player.getWorld(),
+                                Double.parseDouble(parts[0].trim()),
+                                Double.parseDouble(parts[1].trim()),
+                                Double.parseDouble(parts[2].trim()));
+                        } else {
+                            plugin.getLogger().warning("[GUI] Invalid teleport format: " + s);
+                            continue;
+                        }
+                        player.teleport(loc);
+                    } else if (s.startsWith("give:")) {
+                        // Give item: give:MATERIAL or give:MATERIAL:amount
+                        String[] parts = s.substring("give:".length()).split(":");
+                        String matName = parts[0].trim().toUpperCase(Locale.ROOT);
+                        int amount = parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 1;
+                        org.bukkit.Material mat = org.bukkit.Material.matchMaterial(matName);
+                        if (mat != null) {
+                            org.bukkit.inventory.ItemStack item = new org.bukkit.inventory.ItemStack(mat, amount);
+                            player.getInventory().addItem(item);
+                        } else {
+                            plugin.getLogger().warning("[GUI] Invalid material: " + matName);
+                        }
+                    } else if (s.equalsIgnoreCase("close")) {
+                        // Close the GUI
+                        player.closeInventory();
+                    } else if (s.startsWith("title:")) {
+                        // Show title: title:Title Text or title:Title|Subtitle or title:Title|Subtitle:fadeIn:stay:fadeOut
+                        String content = s.substring("title:".length());
+                        String[] parts = content.split("\\|");
+                        String titleText = plugin.applyPlaceholders(parts[0].trim(), player, plugin.playersToDate());
+                        String subtitleText = parts.length > 1 ? plugin.applyPlaceholders(parts[1].split(":")[0].trim(), player, plugin.playersToDate()) : "";
+                        int fadeIn = 10, stay = 70, fadeOut = 20;
+                        if (parts.length > 1) {
+                            String[] timings = parts[1].split(":");
+                            if (timings.length >= 4) {
+                                fadeIn = Integer.parseInt(timings[1].trim());
+                                stay = Integer.parseInt(timings[2].trim());
+                                fadeOut = Integer.parseInt(timings[3].trim());
+                            }
+                        }
+                        player.sendTitle(
+                            FirstLogin.colorizeWithHex(titleText),
+                            FirstLogin.colorizeWithHex(subtitleText),
+                            fadeIn, stay, fadeOut
+                        );
+                    } else if (s.startsWith("actionbar:")) {
+                        // Show action bar: actionbar:Message Text
+                        String msg = plugin.applyPlaceholders(s.substring("actionbar:".length()), player, plugin.playersToDate());
+                        try {
+                            plugin.getAdventure().player(player).sendActionBar(plugin.getMiniMessage().deserialize(msg));
+                        } catch (Throwable t2) {
+                            player.spigot().sendMessage(net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                                net.md_5.bungee.api.chat.TextComponent.fromLegacyText(FirstLogin.colorizeWithHex(msg)));
+                        }
+                    } else if (s.startsWith("effect:")) {
+                        // Give potion effect: effect:EFFECT_TYPE:duration:amplifier or effect:EFFECT_TYPE:duration
+                        String[] parts = s.substring("effect:".length()).split(":");
+                        String effectName = parts[0].trim().toUpperCase(Locale.ROOT);
+                        int duration = parts.length > 1 ? Integer.parseInt(parts[1].trim()) * 20 : 200; // seconds to ticks
+                        int amplifier = parts.length > 2 ? Integer.parseInt(parts[2].trim()) : 0;
+                        try {
+                            org.bukkit.potion.PotionEffectType type = org.bukkit.potion.PotionEffectType.getByName(effectName);
+                            if (type != null) {
+                                player.addPotionEffect(new org.bukkit.potion.PotionEffect(type, duration, amplifier));
+                            } else {
+                                plugin.getLogger().warning("[GUI] Invalid potion effect: " + effectName);
+                            }
+                        } catch (Throwable t2) {
+                            plugin.getLogger().warning("[GUI] Error applying effect: " + t2.getMessage());
+                        }
+                    } else if (s.startsWith("broadcast:")) {
+                        // Broadcast message to all online players
+                        String msg = plugin.applyPlaceholders(s.substring("broadcast:".length()), player, plugin.playersToDate());
+                        String colorized = FirstLogin.colorizeWithHex(msg);
+                        for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+                            p.sendMessage(colorized);
+                        }
+                    } else if (s.startsWith("console:")) {
+                        // Run command as console (ignores runAs setting)
+                        String cmd = plugin.applyPlaceholders(s.substring("console:".length()), player, plugin.playersToDate());
+                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+                    } else if (s.startsWith("player:")) {
+                        // Run command as player (ignores runAs setting)
+                        String cmd = plugin.applyPlaceholders(s.substring("player:".length()), player, plugin.playersToDate());
+                        player.performCommand(cmd);
+                    } else if (s.startsWith("chat:")) {
+                        // Make player send a chat message
+                        String msg = plugin.applyPlaceholders(s.substring("chat:".length()), player, plugin.playersToDate());
+                        player.chat(msg);
+                    } else if (s.startsWith("xp:")) {
+                        // Give XP: xp:amount or xp:levels:amount
+                        String content = s.substring("xp:".length());
+                        if (content.toLowerCase(Locale.ROOT).startsWith("levels:")) {
+                            int levels = Integer.parseInt(content.substring("levels:".length()).trim());
+                            player.giveExpLevels(levels);
+                        } else {
+                            int xp = Integer.parseInt(content.trim());
+                            player.giveExp(xp);
+                        }
+                    } else if (s.startsWith("random:")) {
+                        // Pick random action from list: random:action1|action2|action3
+                        String[] options = s.substring("random:".length()).split("\\|");
+                        if (options.length > 0) {
+                            String picked = options[new java.util.Random().nextInt(options.length)].trim();
+                            // Recursively execute the picked action
+                            executeAction(player, a, picked);
+                        }
+                    } else if (s.startsWith("delay:")) {
+                        // Delayed action: delay:ticks:action
+                        String content = s.substring("delay:".length());
+                        int colonIdx = content.indexOf(':');
+                        if (colonIdx > 0) {
+                            int ticks = Integer.parseInt(content.substring(0, colonIdx).trim());
+                            String delayedAction = content.substring(colonIdx + 1).trim();
+                            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                                if (player.isOnline()) {
+                                    executeAction(player, a, delayedAction);
+                                }
+                            }, ticks);
+                        }
+                    } else if (s.startsWith("if:")) {
+                        // Conditional action: if:requirement:action or if:requirement:action:elseAction
+                        String content = s.substring("if:".length());
+                        String[] parts = content.split(":", 3);
+                        if (parts.length >= 2) {
+                            String requirement = parts[0].trim();
+                            String thenAction = parts[1].trim();
+                            String elseAction = parts.length >= 3 ? parts[2].trim() : null;
+                            if (checkRequirementNoMessage(player, requirement)) {
+                                executeAction(player, a, thenAction);
+                            } else if (elseAction != null && !elseAction.isEmpty()) {
+                                executeAction(player, a, elseAction);
+                            }
+                        }
+                    } else if (s.startsWith("repeat:")) {
+                        // Repeat action: repeat:count:action
+                        String content = s.substring("repeat:".length());
+                        int colonIdx = content.indexOf(':');
+                        if (colonIdx > 0) {
+                            int count = Integer.parseInt(content.substring(0, colonIdx).trim());
+                            String repeatAction = content.substring(colonIdx + 1).trim();
+                            for (int i = 0; i < Math.min(count, 100); i++) { // Cap at 100 to prevent abuse
+                                executeAction(player, a, repeatAction);
+                            }
+                        }
+                    } else if (s.startsWith("chance:")) {
+                        // Chance-based action: chance:50:action (50% chance)
+                        String content = s.substring("chance:".length());
+                        int colonIdx = content.indexOf(':');
+                        if (colonIdx > 0) {
+                            int percent = Integer.parseInt(content.substring(0, colonIdx).trim());
+                            String chanceAction = content.substring(colonIdx + 1).trim();
+                            if (new java.util.Random().nextInt(100) < percent) {
+                                executeAction(player, a, chanceAction);
+                            }
+                        }
+                    } else if (s.startsWith("heal:")) {
+                        // Heal player: heal:amount or heal:full
+                        String content = s.substring("heal:".length()).trim().toLowerCase(Locale.ROOT);
+                        double maxHealth = player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getValue();
+                        if (content.equals("full")) {
+                            player.setHealth(maxHealth);
+                        } else {
+                            double amount = Double.parseDouble(content);
+                            player.setHealth(Math.min(maxHealth, player.getHealth() + amount));
+                        }
+                    } else if (s.startsWith("feed:")) {
+                        // Feed player: feed:amount or feed:full
+                        String content = s.substring("feed:".length()).trim().toLowerCase(Locale.ROOT);
+                        if (content.equals("full")) {
+                            player.setFoodLevel(20);
+                            player.setSaturation(20f);
+                        } else {
+                            int amount = Integer.parseInt(content);
+                            player.setFoodLevel(Math.min(20, player.getFoodLevel() + amount));
+                        }
+                    } else if (s.startsWith("gamemode:")) {
+                        // Set gamemode: gamemode:SURVIVAL
+                        String mode = s.substring("gamemode:".length()).trim().toUpperCase(Locale.ROOT);
+                        try {
+                            player.setGameMode(org.bukkit.GameMode.valueOf(mode));
+                        } catch (IllegalArgumentException e) {
+                            plugin.getLogger().warning("[GUI] Invalid gamemode: " + mode);
+                        }
+                    } else if (s.startsWith("firework:")) {
+                        // Launch firework: firework:color or firework:color:type:power
+                        // Colors: RED, BLUE, GREEN, YELLOW, etc. Types: BALL, BALL_LARGE, BURST, STAR, CREEPER
+                        String content = s.substring("firework:".length());
+                        String[] parts = content.split(":");
+                        try {
+                            org.bukkit.Color color = org.bukkit.Color.WHITE;
+                            org.bukkit.FireworkEffect.Type type = org.bukkit.FireworkEffect.Type.BALL;
+                            int power = 1;
+                            if (parts.length >= 1 && !parts[0].isEmpty()) {
+                                try {
+                                    if (parts[0].startsWith("#")) {
+                                        color = org.bukkit.Color.fromRGB(Integer.parseInt(parts[0].substring(1), 16));
+                                    } else {
+                                        java.lang.reflect.Field f = org.bukkit.Color.class.getField(parts[0].trim().toUpperCase(Locale.ROOT));
+                                        color = (org.bukkit.Color) f.get(null);
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                            if (parts.length >= 2) {
+                                try { type = org.bukkit.FireworkEffect.Type.valueOf(parts[1].trim().toUpperCase(Locale.ROOT)); } catch (Throwable ignored) {}
+                            }
+                            if (parts.length >= 3) {
+                                try { power = Integer.parseInt(parts[2].trim()); } catch (Throwable ignored) {}
+                            }
+                            org.bukkit.entity.Firework fw = player.getWorld().spawn(player.getLocation(), org.bukkit.entity.Firework.class);
+                            org.bukkit.inventory.meta.FireworkMeta fwm = fw.getFireworkMeta();
+                            fwm.addEffect(org.bukkit.FireworkEffect.builder().withColor(color).with(type).withFlicker().build());
+                            fwm.setPower(Math.max(0, Math.min(3, power)));
+                            fw.setFireworkMeta(fwm);
+                        } catch (Throwable t) {
+                            plugin.getLogger().warning("[GUI] Error spawning firework: " + t.getMessage());
+                        }
+                    } else if (s.startsWith("particle:")) {
+                        // Spawn particles: particle:PARTICLE_TYPE or particle:PARTICLE_TYPE:count
+                        String content = s.substring("particle:".length());
+                        String[] parts = content.split(":");
+                        try {
+                            org.bukkit.Particle particle = org.bukkit.Particle.valueOf(parts[0].trim().toUpperCase(Locale.ROOT));
+                            int count = parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 30;
+                            player.getWorld().spawnParticle(particle, player.getLocation().add(0, 1, 0), count, 0.5, 0.5, 0.5, 0.1);
+                        } catch (Throwable t) {
+                            plugin.getLogger().warning("[GUI] Invalid particle: " + parts[0]);
+                        }
+                    } else if (s.startsWith("fly:")) {
+                        // Toggle fly: fly:on, fly:off, fly:toggle
+                        String mode = s.substring("fly:".length()).trim().toLowerCase(Locale.ROOT);
+                        switch (mode) {
+                            case "on": case "true": case "enable":
+                                player.setAllowFlight(true);
+                                player.setFlying(true);
+                                break;
+                            case "off": case "false": case "disable":
+                                player.setFlying(false);
+                                player.setAllowFlight(false);
+                                break;
+                            case "toggle":
+                                if (player.getAllowFlight()) {
+                                    player.setFlying(false);
+                                    player.setAllowFlight(false);
+                                } else {
+                                    player.setAllowFlight(true);
+                                    player.setFlying(true);
+                                }
+                                break;
+                        }
+                    } else if (s.startsWith("bossbar:")) {
+                        // Show temporary bossbar: bossbar:text:color:seconds or bossbar:text:seconds
+                        String content = s.substring("bossbar:".length());
+                        String[] parts = content.split(":");
+                        String text = parts[0].trim();
+                        org.bukkit.boss.BarColor barColor = org.bukkit.boss.BarColor.PURPLE;
+                        int seconds = 5;
+                        if (parts.length >= 3) {
+                            try { barColor = org.bukkit.boss.BarColor.valueOf(parts[1].trim().toUpperCase(Locale.ROOT)); } catch (Throwable ignored) {}
+                            try { seconds = Integer.parseInt(parts[2].trim()); } catch (Throwable ignored) {}
+                        } else if (parts.length >= 2) {
+                            try { seconds = Integer.parseInt(parts[1].trim()); } catch (Throwable ignored) {}
+                        }
+                        String colorized = plugin.applyPlaceholders(text, player, plugin.playersToDate());
+                        org.bukkit.boss.BossBar bar = Bukkit.createBossBar(FirstLogin.colorizeWithHex(colorized), barColor, org.bukkit.boss.BarStyle.SOLID);
+                        bar.addPlayer(player);
+                        final org.bukkit.boss.BossBar finalBar = bar;
+                        Bukkit.getScheduler().runTaskLater(plugin, () -> finalBar.removeAll(), seconds * 20L);
+                    } else if (s.equalsIgnoreCase("cleareffects")) {
+                        // Clear all potion effects
+                        for (org.bukkit.potion.PotionEffect effect : player.getActivePotionEffects()) {
+                            player.removePotionEffect(effect.getType());
+                        }
+                    } else if (s.startsWith("cleareffect:")) {
+                        // Clear specific effect: cleareffect:SPEED
+                        String effectName = s.substring("cleareffect:".length()).trim().toUpperCase(Locale.ROOT);
+                        org.bukkit.potion.PotionEffectType type = org.bukkit.potion.PotionEffectType.getByName(effectName);
+                        if (type != null) player.removePotionEffect(type);
+                    } else if (s.startsWith("velocity:")) {
+                        // Apply velocity: velocity:x:y:z or velocity:up:power
+                        String content = s.substring("velocity:".length());
+                        String[] parts = content.split(":");
+                        org.bukkit.util.Vector vel;
+                        if (parts[0].equalsIgnoreCase("up")) {
+                            double power = parts.length > 1 ? Double.parseDouble(parts[1].trim()) : 1.0;
+                            vel = new org.bukkit.util.Vector(0, power, 0);
+                        } else if (parts.length >= 3) {
+                            vel = new org.bukkit.util.Vector(
+                                Double.parseDouble(parts[0].trim()),
+                                Double.parseDouble(parts[1].trim()),
+                                Double.parseDouble(parts[2].trim()));
+                        } else {
+                            vel = new org.bukkit.util.Vector(0, 1, 0);
+                        }
+                        player.setVelocity(vel);
+                    } else if (s.startsWith("sudo:")) {
+                        // Make player run command as if they typed it: sudo:command
+                        String cmd = plugin.applyPlaceholders(s.substring("sudo:".length()), player, plugin.playersToDate());
+                        player.performCommand(cmd);
+                    } else if (s.startsWith("op:")) {
+                        // Run command with temporary OP: op:command
+                        String cmd = plugin.applyPlaceholders(s.substring("op:".length()), player, plugin.playersToDate());
+                        boolean wasOp = player.isOp();
+                        try {
+                            player.setOp(true);
+                            player.performCommand(cmd);
+                        } finally {
+                            player.setOp(wasOp);
+                        }
+                    } else if (s.startsWith("money:")) {
+                        // Give/take money (requires Vault): money:100 or money:-50
+                        // Note: This is a placeholder - actual implementation requires Vault hook
+                        plugin.getLogger().info("[GUI] Money action requires Vault integration: " + s);
+                    } else if (s.startsWith("permission:add:")) {
+                        // Add permission (requires permission plugin): permission:add:node
+                        plugin.getLogger().info("[GUI] Permission action requires permission plugin: " + s);
+                    } else if (s.startsWith("permission:remove:")) {
+                        // Remove permission: permission:remove:node
+                        plugin.getLogger().info("[GUI] Permission action requires permission plugin: " + s);
                     }
                 } catch (Throwable t) {
                     plugin.getLogger().warning("Error executing GUI action '" + s + "' for " + player.getName() + ": " + t.getMessage());
@@ -716,17 +1197,200 @@ public class WelcomeGui implements Listener {
         if (a.delayTicks > 0) Bukkit.getScheduler().runTaskLater(plugin, runner, a.delayTicks);
         else runner.run();
     }
+    
+    // Helper to execute a single action string (used for recursive actions like random, delay, if, etc.)
+    private void executeAction(Player player, GuiAction a, String actionStr) {
+        if (actionStr == null || actionStr.isEmpty() || player == null || !player.isOnline()) return;
+        try {
+            String s = actionStr.trim();
+            if (s.equalsIgnoreCase("back")) {
+                openFor(player, Math.max(1, currentPageOf(player) - 1));
+            } else if (s.startsWith("page:")) {
+                int to = Integer.parseInt(s.substring("page:".length()).trim());
+                openFor(player, Math.max(1, to));
+            } else if (s.startsWith("command:")) {
+                String cmd = plugin.applyPlaceholders(s.substring("command:".length()), player, plugin.playersToDate());
+                dispatchCommand(a.runAs, player, cmd);
+            } else if (s.startsWith("console:")) {
+                String cmd = plugin.applyPlaceholders(s.substring("console:".length()), player, plugin.playersToDate());
+                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+            } else if (s.startsWith("player:")) {
+                String cmd = plugin.applyPlaceholders(s.substring("player:".length()), player, plugin.playersToDate());
+                player.performCommand(cmd);
+            } else if (s.startsWith("message:")) {
+                String path = s.substring("message:".length());
+                List<String> list = pluginList(player, path);
+                for (String m : list) sendTo(player, m);
+            } else if (s.startsWith("sound:")) {
+                String[] parts = s.substring("sound:".length()).split(":");
+                String soundName = parts[0].trim().toUpperCase(Locale.ROOT);
+                float vol = parts.length > 1 ? Float.parseFloat(parts[1].trim()) : 1.0f;
+                float pitch = parts.length > 2 ? Float.parseFloat(parts[2].trim()) : 1.0f;
+                try {
+                    org.bukkit.Sound sound = org.bukkit.Sound.valueOf(soundName);
+                    player.playSound(player.getLocation(), sound, vol, pitch);
+                } catch (IllegalArgumentException ignored) {}
+            } else if (s.startsWith("give:")) {
+                String[] parts = s.substring("give:".length()).split(":");
+                String matName = parts[0].trim().toUpperCase(Locale.ROOT);
+                int amount = parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 1;
+                org.bukkit.Material mat = org.bukkit.Material.matchMaterial(matName);
+                if (mat != null) {
+                    player.getInventory().addItem(new org.bukkit.inventory.ItemStack(mat, amount));
+                }
+            } else if (s.startsWith("effect:")) {
+                String[] parts = s.substring("effect:".length()).split(":");
+                String effectName = parts[0].trim().toUpperCase(Locale.ROOT);
+                int duration = parts.length > 1 ? Integer.parseInt(parts[1].trim()) * 20 : 200;
+                int amplifier = parts.length > 2 ? Integer.parseInt(parts[2].trim()) : 0;
+                org.bukkit.potion.PotionEffectType type = org.bukkit.potion.PotionEffectType.getByName(effectName);
+                if (type != null) {
+                    player.addPotionEffect(new org.bukkit.potion.PotionEffect(type, duration, amplifier));
+                }
+            } else if (s.startsWith("xp:")) {
+                String content = s.substring("xp:".length());
+                if (content.toLowerCase(Locale.ROOT).startsWith("levels:")) {
+                    player.giveExpLevels(Integer.parseInt(content.substring("levels:".length()).trim()));
+                } else {
+                    player.giveExp(Integer.parseInt(content.trim()));
+                }
+            } else if (s.startsWith("heal:")) {
+                String content = s.substring("heal:".length()).trim().toLowerCase(Locale.ROOT);
+                if (content.equals("full")) {
+                    player.setHealth(player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getValue());
+                } else {
+                    double max = player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getValue();
+                    player.setHealth(Math.min(max, player.getHealth() + Double.parseDouble(content)));
+                }
+            } else if (s.startsWith("feed:")) {
+                String content = s.substring("feed:".length()).trim().toLowerCase(Locale.ROOT);
+                if (content.equals("full")) {
+                    player.setFoodLevel(20);
+                    player.setSaturation(20f);
+                } else {
+                    player.setFoodLevel(Math.min(20, player.getFoodLevel() + Integer.parseInt(content)));
+                }
+            } else if (s.startsWith("broadcast:")) {
+                String msg = FirstLogin.colorizeWithHex(plugin.applyPlaceholders(s.substring("broadcast:".length()), player, plugin.playersToDate()));
+                for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) p.sendMessage(msg);
+            } else if (s.equalsIgnoreCase("close")) {
+                player.closeInventory();
+            } else if (s.startsWith("flag:set:")) {
+                setFlag(player.getUniqueId(), s.substring("flag:set:".length()), true);
+            } else if (s.startsWith("flag:clear:")) {
+                setFlag(player.getUniqueId(), s.substring("flag:clear:".length()), false);
+            }
+            // Note: recursive actions (random, delay, if, repeat, chance) are handled in the main execute loop
+        } catch (Throwable t) {
+            plugin.getLogger().warning("[GUI] Error in executeAction: " + t.getMessage());
+        }
+    }
 
     private boolean checkRequirementNoMessage(Player player, String req) {
         if (req == null || req.isEmpty()) return true;
+        String lc = req.toLowerCase(Locale.ROOT);
+        
         if (req.startsWith("flag:")) {
             String flag = req.substring("flag:".length());
             return getFlag(player.getUniqueId(), flag);
+        } else if (req.startsWith("!flag:")) {
+            // Negated flag check
+            String flag = req.substring("!flag:".length());
+            return !getFlag(player.getUniqueId(), flag);
         } else if (req.startsWith("perm:")) {
             String perm = req.substring("perm:".length());
             return !perm.isEmpty() && player.hasPermission(perm);
+        } else if (req.startsWith("!perm:")) {
+            // Negated permission check
+            String perm = req.substring("!perm:".length());
+            return perm.isEmpty() || !player.hasPermission(perm);
+        } else if (lc.startsWith("level:")) {
+            // Check player XP level: level:>=10, level:<5, level:==20
+            String expr = req.substring("level:".length()).trim();
+            int playerLevel = player.getLevel();
+            return evaluateComparison(playerLevel, expr);
+        } else if (lc.startsWith("health:")) {
+            // Check player health: health:>=10, health:<5
+            String expr = req.substring("health:".length()).trim();
+            double health = player.getHealth();
+            return evaluateComparisonDouble(health, expr);
+        } else if (lc.startsWith("food:")) {
+            // Check player food level: food:>=10
+            String expr = req.substring("food:".length()).trim();
+            int food = player.getFoodLevel();
+            return evaluateComparison(food, expr);
+        } else if (lc.startsWith("gamemode:")) {
+            // Check gamemode: gamemode:SURVIVAL, gamemode:CREATIVE
+            String mode = req.substring("gamemode:".length()).trim().toUpperCase(Locale.ROOT);
+            return player.getGameMode().name().equals(mode);
+        } else if (lc.startsWith("world:")) {
+            // Check world: world:world_nether
+            String worldName = req.substring("world:".length()).trim();
+            return player.getWorld().getName().equalsIgnoreCase(worldName);
+        } else if (lc.startsWith("online:")) {
+            // Check online player count: online:>=10, online:<50
+            String expr = req.substring("online:".length()).trim();
+            int online = Bukkit.getOnlinePlayers().size();
+            return evaluateComparison(online, expr);
+        } else if (lc.startsWith("time:")) {
+            // Check world time: time:day, time:night, time:>=12000
+            String expr = req.substring("time:".length()).trim().toLowerCase(Locale.ROOT);
+            long time = player.getWorld().getTime();
+            if (expr.equals("day")) return time >= 0 && time < 12000;
+            if (expr.equals("night")) return time >= 12000 && time < 24000;
+            return evaluateComparison((int) time, expr);
+        } else if (lc.startsWith("weather:")) {
+            // Check weather: weather:clear, weather:rain, weather:storm
+            String w = req.substring("weather:".length()).trim().toLowerCase(Locale.ROOT);
+            org.bukkit.World world = player.getWorld();
+            if (w.equals("clear")) return !world.hasStorm() && !world.isThundering();
+            if (w.equals("rain")) return world.hasStorm() && !world.isThundering();
+            if (w.equals("storm") || w.equals("thunder")) return world.isThundering();
+            return false;
+        } else if (lc.startsWith("cooldown:")) {
+            // Check if a cooldown has expired: cooldown:key:seconds (true if NOT on cooldown)
+            String[] parts = req.substring("cooldown:".length()).split(":");
+            if (parts.length >= 2) {
+                String key = parts[0].trim();
+                int seconds = Integer.parseInt(parts[1].trim());
+                return cooldownRemaining(player.getUniqueId(), key, seconds) <= 0;
+            }
+            return true;
+        } else if (lc.startsWith("played:")) {
+            // Check playtime: played:>=3600 (seconds total playtime)
+            String expr = req.substring("played:".length()).trim();
+            long playedSeconds = player.getStatistic(org.bukkit.Statistic.PLAY_ONE_MINUTE) / 20;
+            return evaluateComparison((int) playedSeconds, expr);
         }
         return true;
+    }
+    
+    private boolean evaluateComparison(int value, String expr) {
+        try {
+            if (expr.startsWith(">=")) return value >= Integer.parseInt(expr.substring(2).trim());
+            if (expr.startsWith("<=")) return value <= Integer.parseInt(expr.substring(2).trim());
+            if (expr.startsWith("==")) return value == Integer.parseInt(expr.substring(2).trim());
+            if (expr.startsWith("!=")) return value != Integer.parseInt(expr.substring(2).trim());
+            if (expr.startsWith(">")) return value > Integer.parseInt(expr.substring(1).trim());
+            if (expr.startsWith("<")) return value < Integer.parseInt(expr.substring(1).trim());
+            return value == Integer.parseInt(expr.trim());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+    
+    private boolean evaluateComparisonDouble(double value, String expr) {
+        try {
+            if (expr.startsWith(">=")) return value >= Double.parseDouble(expr.substring(2).trim());
+            if (expr.startsWith("<=")) return value <= Double.parseDouble(expr.substring(2).trim());
+            if (expr.startsWith("==")) return value == Double.parseDouble(expr.substring(2).trim());
+            if (expr.startsWith("!=")) return value != Double.parseDouble(expr.substring(2).trim());
+            if (expr.startsWith(">")) return value > Double.parseDouble(expr.substring(1).trim());
+            if (expr.startsWith("<")) return value < Double.parseDouble(expr.substring(1).trim());
+            return value == Double.parseDouble(expr.trim());
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     private void dispatchCommand(String runAs, Player player, String cmd) {
@@ -784,6 +1448,20 @@ public class WelcomeGui implements Listener {
         } catch (IllegalArgumentException ignored) {}
     }
 
+    // Play configurable GUI sounds (open, close, rulesAccepted)
+    private void playGuiSound(Player p, String type) {
+        try {
+            String basePath = "welcomeGui.sounds." + type;
+            if (!FirstLogin.config.getBoolean(basePath + ".enabled", false)) return;
+            String name = FirstLogin.config.getString(basePath + ".name", null);
+            if (name == null || name.isEmpty()) return;
+            float vol = (float) FirstLogin.config.getDouble(basePath + ".volume", 1.0);
+            float pitch = (float) FirstLogin.config.getDouble(basePath + ".pitch", 1.0);
+            Sound s = Sound.valueOf(name);
+            p.playSound(p.getLocation(), s, vol, pitch);
+        } catch (Throwable ignored) {}
+    }
+
     private long cooldownRemaining(UUID uuid, String key, int cooldownSec) {
         long last = FirstLogin.players.getLong("cooldowns." + uuid + "." + key, 0L);
         long now = System.currentTimeMillis();
@@ -827,9 +1505,8 @@ public class WelcomeGui implements Listener {
     }
 
     private String versionedFlagName(String flag) {
-        if (!"rules".equalsIgnoreCase(flag)) return flag;
-        int ver = FirstLogin.config.getInt("welcomeGui.rulesVersion", 1);
-        return "rules_v" + ver;
+        // Delegate to plugin's centralized method
+        return plugin.versionedFlagName(flag);
     }
 
     private void persist() {

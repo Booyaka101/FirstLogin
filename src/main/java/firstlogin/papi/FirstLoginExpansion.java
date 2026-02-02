@@ -41,31 +41,17 @@ import org.jetbrains.annotations.Nullable;
  * - %firstlogin_metrics_next_reset_in_hours% -> hours until next reset (0 if disabled)
  * - %firstlogin_metrics_next_reset_pretty% -> pretty duration until next reset (empty if disabled)
  * - %firstlogin_metrics_last_reset_pretty% -> pretty time since last reset (empty if unknown)
+ * - %firstlogin_has_guide% -> true if player has an active animated guide
+ * - %firstlogin_bossbar_active% -> true if bossbar feature is enabled
+ * - %firstlogin_version% -> plugin version string
+ * - %firstlogin_item_clicks_total% -> total item clicks today across all items
+ * - %firstlogin_actionbar_active% -> true if player has an active action bar message
  */
 public class FirstLoginExpansion extends PlaceholderExpansion {
     private final FirstLogin plugin;
 
     public FirstLoginExpansion(FirstLogin plugin) {
         this.plugin = plugin;
-    }
-
-    // Format a duration in millis as a compact pretty string like "1d 2h 3m 4s"
-    private static String formatDurationPretty(long millis) {
-        if (millis <= 0L) return "";
-        long totalSeconds = millis / 1000L;
-        long days = totalSeconds / 86400L;
-        long hours = (totalSeconds % 86400L) / 3600L;
-        long minutes = (totalSeconds % 3600L) / 60L;
-        long seconds = totalSeconds % 60L;
-        StringBuilder sb = new StringBuilder();
-        if (days > 0) sb.append(days).append('d').append(' ');
-        if (hours > 0) sb.append(hours).append('h').append(' ');
-        if (minutes > 0) sb.append(minutes).append('m').append(' ');
-        if (seconds > 0 || sb.length() == 0) sb.append(seconds).append('s');
-        // Trim trailing space if present
-        int len = sb.length();
-        if (len > 0 && sb.charAt(len - 1) == ' ') sb.setLength(len - 1);
-        return sb.toString();
     }
 
     @Override
@@ -104,6 +90,10 @@ public class FirstLoginExpansion extends PlaceholderExpansion {
             return Integer.toString(plugin.getItemClicksToday(key));
         }
         switch (id) {
+            case "rules_pending_count":
+                return Integer.toString(plugin.getRulesPendingCount());
+            case "rules_accepted_count":
+                return Integer.toString(plugin.getRulesAcceptedCount());
             case "player": {
                 if (player != null) {
                     String name = player.getName();
@@ -274,15 +264,37 @@ public class FirstLoginExpansion extends PlaceholderExpansion {
                 long now = System.currentTimeMillis();
                 long delta = Math.max(0L, ts - now);
                 if (ts <= 0L || delta <= 0L) return "";
-                return formatDurationPretty(delta);
+                return FirstLogin.formatDurationPretty(delta);
             }
             case "metrics_last_reset_pretty": {
                 long ts = plugin.getTelemetryLastResetTs();
                 if (ts <= 0L) return "";
                 long now = System.currentTimeMillis();
                 long delta = Math.max(0L, now - ts);
-                String pretty = formatDurationPretty(delta);
+                String pretty = FirstLogin.formatDurationPretty(delta);
                 return pretty.isEmpty() ? "" : (pretty + " ago");
+            }
+            case "has_guide": {
+                if (player == null) return "false";
+                Player p = Bukkit.getPlayer(player.getUniqueId());
+                if (p == null) return "false";
+                return Boolean.toString(plugin.hasActiveGuide(p));
+            }
+            case "bossbar_active": {
+                if (player == null) return "false";
+                Player p = Bukkit.getPlayer(player.getUniqueId());
+                if (p == null) return "false";
+                return Boolean.toString(plugin.hasBossBarActive(p));
+            }
+            case "version":
+                return plugin.getDescription().getVersion();
+            case "item_clicks_total":
+                return Integer.toString(plugin.getTotalItemClicksToday());
+            case "actionbar_active": {
+                if (player == null) return "false";
+                Player p = Bukkit.getPlayer(player.getUniqueId());
+                if (p == null) return "false";
+                return Boolean.toString(plugin.hasActiveActionBar(p));
             }
             default:
                 return null; // unknown
